@@ -1,0 +1,13 @@
+node_modules
+dist
+.env
+.env.local
+generated-bundles
+storage
+playwright-report
+test-results
+ppt_review_assets
+sample-documents
+*.pptx
+*.html
+*.xlsx
