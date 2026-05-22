@@ -5,6 +5,12 @@ export type ValidationIssue = {
   message: string;
 };
 
+type DocumentLabelReference = {
+  en: string;
+  es: string;
+  reference: string;
+};
+
 function pushRequired(issues: ValidationIssue[], path: string, value: string | null | undefined, label: string) {
   if (!value || !value.trim()) {
     issues.push({ path, message: `${label} is required.` });
@@ -19,10 +25,20 @@ function normaliseComparableText(value: string | null | undefined): string {
   return (value ?? '').replace(/\r\n/g, '\n').trim();
 }
 
+function buildDocumentReference(eventNumber: number, categoryLabel: string, documentEnum: string): string {
+  return `Event ${eventNumber} > ${categoryLabel} > ${documentEnum}`;
+}
+
 export function isUnsupportedUiOnlyEvent(enumValue: string | null | undefined, englishLabel: string | null | undefined): boolean {
   const enumText = normaliseText(enumValue);
   const labelText = normaliseText(englishLabel);
-  return enumText.includes('unsupported event') || labelText.includes('unsupported event');
+  return (
+    enumText.includes('unsupported event') ||
+    enumText.includes('unsupprted event') ||
+    enumText.includes('ui failure if some configuratiion is missing') ||
+    enumText.includes('ui failure if some configuration is missing') ||
+    labelText.includes('unsupported event')
+  );
 }
 
 export function isUnsupportedUiOnlyWorkbookEvent(event: QleWorkbookModel['events'][number]): boolean {
@@ -31,14 +47,7 @@ export function isUnsupportedUiOnlyWorkbookEvent(event: QleWorkbookModel['events
 
 export function validateWorkbookModel(model: QleWorkbookModel): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const documentLabelRegistry = new Map<
-    string,
-    {
-      en: string;
-      es: string;
-      path: string;
-    }
-  >();
+  const documentLabelRegistry = new Map<string, DocumentLabelReference>();
 
   model.events.forEach((event: QleEvent, eventIndex: number) => {
     if (event.isRemoved) {
@@ -142,7 +151,11 @@ export function validateWorkbookModel(model: QleWorkbookModel): ValidationIssue[
           return;
         }
 
-        const currentReferencePath = `Event ${event.eventNumber} > ${category.enum || categoryIndex + 1} > ${document.enum}`;
+        const currentReferencePath = buildDocumentReference(
+          event.eventNumber,
+          category.enum || String(categoryIndex + 1),
+          document.enum,
+        );
         const currentEnglish = normaliseComparableText(document.en);
         const currentSpanish = normaliseComparableText(document.es);
         const existing = documentLabelRegistry.get(documentEnumKey);
@@ -151,7 +164,7 @@ export function validateWorkbookModel(model: QleWorkbookModel): ValidationIssue[
           documentLabelRegistry.set(documentEnumKey, {
             en: currentEnglish,
             es: currentSpanish,
-            path: currentReferencePath,
+            reference: currentReferencePath,
           });
           return;
         }
@@ -159,14 +172,14 @@ export function validateWorkbookModel(model: QleWorkbookModel): ValidationIssue[
         if (existing.en !== currentEnglish) {
           issues.push({
             path: `${documentPath}.en`,
-            message: `Document ${document.enum} English label must match ${existing.path}.`,
+            message: `${currentReferencePath} English label conflicts with ${existing.reference}. Use the same English label in both events.`,
           });
         }
 
         if (existing.es !== currentSpanish) {
           issues.push({
             path: `${documentPath}.es`,
-            message: `Document ${document.enum} Spanish label must match ${existing.path}.`,
+            message: `${currentReferencePath} Spanish label conflicts with ${existing.reference}. Use the same Spanish label in both events.`,
           });
         }
       });

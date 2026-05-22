@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { buildVersionedFormattedName } from '../../shared/fileNames.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -27,7 +28,7 @@ export async function runFormatterTool({
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'qle-format-'));
     const safeName = path.basename(fileName).replace(/[^\w.\- ]+/g, '_');
     const inputPath = path.join(tempDir, safeName || 'input.xlsx');
-    const outputName = `${path.basename(safeName || 'input.xlsx', '.xlsx')}_formatted.xlsx`;
+    const outputName = buildVersionedFormattedName(safeName || 'input.xlsx', 1);
     const outputPath = path.join(tempDir, outputName);
 
     await fs.writeFile(inputPath, inputBuffer);

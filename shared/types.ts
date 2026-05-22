@@ -1,8 +1,17 @@
+export type QleFieldState = {
+  isNew?: boolean;
+  manualIsNew?: boolean | null;
+  isRemoved?: boolean;
+};
+
+export type QleFieldStateMap = Record<string, QleFieldState | undefined>;
+
 export type QleEnumRow = {
   id: string;
   enum: string;
   en: string;
   es: string;
+  fieldStates?: QleFieldStateMap;
   isNew?: boolean;
   manualIsNew?: boolean | null;
   isRemoved?: boolean;
@@ -14,6 +23,17 @@ export type QleDocument = {
   en: string;
   es: string;
   sort?: number | null;
+  fieldStates?: QleFieldStateMap;
+  isNew?: boolean;
+  manualIsNew?: boolean | null;
+  isRemoved?: boolean;
+};
+
+export type QleValidationItem = {
+  id: string;
+  key: string;
+  value: string;
+  fieldStates?: QleFieldStateMap;
   isNew?: boolean;
   manualIsNew?: boolean | null;
   isRemoved?: boolean;
@@ -25,6 +45,8 @@ export type QleCategory = {
   en: string;
   es: string;
   validation: string;
+  validationItems?: QleValidationItem[];
+  fieldStates?: QleFieldStateMap;
   isNew?: boolean;
   manualIsNew?: boolean | null;
   isRemoved?: boolean;
@@ -37,6 +59,7 @@ export type QleEvent = {
   enumRows: QleEnumRow[];
   instructionsEn: string;
   instructionsEs: string;
+  fieldStates?: QleFieldStateMap;
   isNew?: boolean;
   manualIsNew?: boolean | null;
   isRemoved?: boolean;

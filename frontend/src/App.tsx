@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   DbConfig,
   DbConfigResponse,
@@ -18,10 +18,41 @@ import type {
   QleDocument,
   QleEnumRow,
   QleEvent,
+  QleFieldState,
+  QleFieldStateMap,
+  QleValidationItem,
   QleWorkbookModel,
   ReadyForEngineeringResult,
 } from '../../shared/types';
-import { type ValidationIssue, validateWorkbookModel } from '../../shared/validation';
+import {
+  isUnsupportedUiOnlyWorkbookEvent,
+  type ValidationIssue,
+  validateWorkbookModel,
+} from '../../shared/validation';
+import {
+  DbConfigModal,
+  JiraDraftModal,
+  ReadyForEngineeringModal,
+  RebaseWorkbookModal,
+  RenameWorkbookModal,
+  ReviewChangesModal,
+} from './components/app/AppModals';
+import {
+  DeveloperDashboard,
+  PmActionStrip,
+  PmEmptyState,
+  PmWorkspaceIntro,
+  SaveBanner,
+  SidebarRail,
+  WorkflowInsights,
+} from './components/app/AppSections';
+import {
+  NewBadgeIcon,
+  PlusIcon,
+  RemoveFileIcon,
+  TrashIcon,
+  UndoIcon,
+} from './components/app/AppIcons';
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init);
@@ -112,6 +143,7 @@ function createEmptyCategory(): QleCategory {
     en: '',
     es: '',
     validation: '',
+    validationItems: [],
     documents: [],
   };
 }
@@ -126,8 +158,138 @@ function createEmptyDocument(nextSort: number): QleDocument {
   };
 }
 
+function createValidationItem(
+  key = '',
+  value = '',
+  overrides: Partial<QleValidationItem> = {},
+): QleValidationItem {
+  return {
+    id: crypto.randomUUID(),
+    key,
+    value,
+    manualIsNew: null,
+    ...overrides,
+  };
+}
+
+function splitValidationLines(value: string): string[] {
+  return value
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function parseValidationItemsFromText(value: string): QleValidationItem[] {
+  return splitValidationLines(value).map((line) => {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex < 0) {
+      return createValidationItem(line.trim(), '');
+    }
+    return createValidationItem(
+      line.slice(0, separatorIndex).trim(),
+      line.slice(separatorIndex + 1).trim(),
+    );
+  });
+}
+
+function serializeValidationItems(items: QleValidationItem[]): string {
+  return items
+    .filter((item) => item.key.trim())
+    .map((item) => `${item.key.trim()}: ${item.value.trim()}`.trim())
+    .join('\n');
+}
+
+function ensureCategoryValidationItems(category: QleCategory): QleValidationItem[] {
+  if (category.validationItems && category.validationItems.length > 0) {
+    return category.validationItems;
+  }
+  const parsed = parseValidationItemsFromText(category.validation);
+  category.validationItems = parsed;
+  if (parsed.length > 0) {
+    category.validation = serializeValidationItems(parsed);
+  }
+  return category.validationItems;
+}
+
+function syncCategoryValidation(category: QleCategory) {
+  const items = ensureCategoryValidationItems(category);
+  category.validation = serializeValidationItems(items);
+}
+
+type FieldStateHolder = {
+  fieldStates?: QleFieldStateMap;
+};
+
+function ensureFieldState(holder: FieldStateHolder, key: string): QleFieldState {
+  holder.fieldStates ??= {};
+  holder.fieldStates[key] ??= { manualIsNew: null, isNew: false, isRemoved: false };
+  return holder.fieldStates[key]!;
+}
+
+function getFieldState(holder: FieldStateHolder | null | undefined, key: string): QleFieldState | undefined {
+  return holder?.fieldStates?.[key];
+}
+
+function fieldStateHasChanges(fieldState: QleFieldState | undefined): boolean {
+  return Boolean(fieldState?.isNew) || Boolean(fieldState?.isRemoved);
+}
+
+function validationItemHasFieldStateChanges(item: QleValidationItem): boolean {
+  return Object.values(item.fieldStates ?? {}).some((fieldState) => fieldStateHasChanges(fieldState));
+}
+
+function isFixedValidationRuleKey(key: string): boolean {
+  return ['documentsqty', 'mandatorydocuments'].includes(key.trim().toLowerCase());
+}
+
+function validationItemHasNewState(item: QleValidationItem): boolean {
+  return Boolean(item.isNew) || Boolean(getFieldState(item, 'key')?.isNew) || Boolean(getFieldState(item, 'value')?.isNew);
+}
+
+function validationItemHasRemovedState(item: QleValidationItem): boolean {
+  return (
+    Boolean(item.isRemoved) ||
+    Boolean(getFieldState(item, 'key')?.isRemoved) ||
+    Boolean(getFieldState(item, 'value')?.isRemoved)
+  );
+}
+
+function getValidationItemLabel(item: QleValidationItem, fallbackIndex?: number): string {
+  return item.key.trim() || (fallbackIndex != null ? `Rule ${fallbackIndex + 1}` : 'Validation rule');
+}
+
+function applyFieldDelete(holder: FieldStateHolder, key: string) {
+  const state = ensureFieldState(holder, key);
+  state.isNew = false;
+  state.manualIsNew = null;
+  state.isRemoved = false;
+}
+
 function normaliseComparableText(value: string | null | undefined): string {
   return (value ?? '').replace(/\r\n/g, '\n').trim();
+}
+
+function hasComparableTextChanged(
+  currentValue: string | number | null | undefined,
+  baselineValue: string | number | null | undefined,
+): boolean {
+  return normaliseComparableText(String(currentValue ?? '')) !== normaliseComparableText(String(baselineValue ?? ''));
+}
+
+function formatChangedReviewValueLine(
+  label: string,
+  beforeValue: string | number | null | undefined,
+  afterValue: string | number | null | undefined,
+): string {
+  return `  ${label}: "${normaliseComparableText(String(afterValue ?? ''))}" (was "${normaliseComparableText(String(beforeValue ?? ''))}")`;
+}
+
+function escapeAttributeSelectorValue(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 function buildModelIndex(model: QleWorkbookModel | null) {
@@ -135,9 +297,10 @@ function buildModelIndex(model: QleWorkbookModel | null) {
   const enumRows = new Map<string, QleEnumRow>();
   const categories = new Map<string, QleCategory>();
   const documents = new Map<string, QleDocument>();
+  const validationItems = new Map<string, QleValidationItem>();
 
   if (!model) {
-    return { events, enumRows, categories, documents };
+    return { events, enumRows, categories, documents, validationItems };
   }
 
   model.events.forEach((event) => {
@@ -145,11 +308,26 @@ function buildModelIndex(model: QleWorkbookModel | null) {
     event.enumRows.forEach((row) => enumRows.set(row.id, row));
     event.categories.forEach((category) => {
       categories.set(category.id, category);
+      (category.validationItems ?? []).forEach((item) => validationItems.set(item.id, item));
       category.documents.forEach((document) => documents.set(document.id, document));
     });
   });
 
-  return { events, enumRows, categories, documents };
+  return { events, enumRows, categories, documents, validationItems };
+}
+
+function syncScalarFieldState(
+  holder: FieldStateHolder,
+  key: string,
+  currentValue: string | number | null | undefined,
+  baselineValue: string | number | null | undefined,
+  addedByDefault: boolean,
+) {
+  const fieldState = ensureFieldState(holder, key);
+  const derivedIsNew =
+    addedByDefault ||
+    normaliseComparableText(String(currentValue ?? '')) !== normaliseComparableText(String(baselineValue ?? ''));
+  fieldState.isNew = fieldState.isRemoved ? false : fieldState.manualIsNew ?? derivedIsNew;
 }
 
 function syncDerivedNewFlags(model: QleWorkbookModel, baseline: QleWorkbookModel | null) {
@@ -158,224 +336,197 @@ function syncDerivedNewFlags(model: QleWorkbookModel, baseline: QleWorkbookModel
   model.events.forEach((event, eventIndex) => {
     event.eventNumber = eventIndex + 1;
     const baselineEvent = baselineIndex.events.get(event.id);
-    const derivedEventIsNew =
-      !baselineEvent ||
-      Boolean(baselineEvent.isNew) ||
-      normaliseComparableText(event.instructionsEn) !== normaliseComparableText(baselineEvent.instructionsEn) ||
-      normaliseComparableText(event.instructionsEs) !== normaliseComparableText(baselineEvent.instructionsEs);
-    event.isNew = event.manualIsNew ?? derivedEventIsNew;
+    const eventAdded = !baselineEvent || Boolean(baselineEvent.isNew);
+    event.isNew = event.manualIsNew ?? eventAdded;
+    syncScalarFieldState(
+      event,
+      'instructionsEn',
+      event.instructionsEn,
+      baselineEvent?.instructionsEn,
+      eventAdded,
+    );
+    syncScalarFieldState(
+      event,
+      'instructionsEs',
+      event.instructionsEs,
+      baselineEvent?.instructionsEs,
+      eventAdded,
+    );
 
     event.enumRows.forEach((row) => {
       const baselineRow = baselineIndex.enumRows.get(row.id);
-      const derivedRowIsNew =
-        !baselineRow ||
-        Boolean(baselineRow.isNew) ||
-        normaliseComparableText(row.enum) !== normaliseComparableText(baselineRow.enum) ||
-        normaliseComparableText(row.en) !== normaliseComparableText(baselineRow.en) ||
-        normaliseComparableText(row.es) !== normaliseComparableText(baselineRow.es);
-      row.isNew = row.manualIsNew ?? derivedRowIsNew;
+      const rowAdded = !baselineRow || Boolean(baselineRow.isNew);
+      row.isNew = row.manualIsNew ?? rowAdded;
+      syncScalarFieldState(row, 'enum', row.enum, baselineRow?.enum, rowAdded);
+      syncScalarFieldState(row, 'en', row.en, baselineRow?.en, rowAdded);
+      syncScalarFieldState(row, 'es', row.es, baselineRow?.es, rowAdded);
     });
 
     event.categories.forEach((category) => {
+      const validationItems = ensureCategoryValidationItems(category);
       const baselineCategory = baselineIndex.categories.get(category.id);
-      const derivedCategoryIsNew =
-        !baselineCategory ||
-        Boolean(baselineCategory.isNew) ||
-        normaliseComparableText(category.enum) !== normaliseComparableText(baselineCategory.enum) ||
-        normaliseComparableText(category.en) !== normaliseComparableText(baselineCategory.en) ||
-        normaliseComparableText(category.es) !== normaliseComparableText(baselineCategory.es) ||
-        normaliseComparableText(category.validation) !==
-          normaliseComparableText(baselineCategory.validation);
-      category.isNew = category.manualIsNew ?? derivedCategoryIsNew;
+      const categoryAdded = !baselineCategory || Boolean(baselineCategory.isNew);
+      const baselineValidationItems = baselineCategory
+        ? ensureCategoryValidationItems(baselineCategory)
+        : [];
+
+      validationItems.forEach((item) => {
+        const baselineItem = baselineValidationItems.find((candidate) => candidate.id === item.id);
+        const itemAdded = !baselineItem || Boolean(baselineItem.isNew);
+        item.isNew = item.isRemoved ? false : item.manualIsNew ?? itemAdded;
+        syncScalarFieldState(item, 'key', item.key, baselineItem?.key, itemAdded);
+        syncScalarFieldState(item, 'value', item.value, baselineItem?.value, itemAdded);
+      });
+
+      syncCategoryValidation(category);
+      category.isNew = category.manualIsNew ?? categoryAdded;
+      syncScalarFieldState(category, 'enum', category.enum, baselineCategory?.enum, categoryAdded);
+      syncScalarFieldState(category, 'en', category.en, baselineCategory?.en, categoryAdded);
+      syncScalarFieldState(category, 'es', category.es, baselineCategory?.es, categoryAdded);
+      syncScalarFieldState(
+        category,
+        'validation',
+        category.validation,
+        baselineCategory?.validation,
+        categoryAdded,
+      );
 
       category.documents.forEach((document, documentIndex) => {
         document.sort = documentIndex + 1;
         const baselineDocument = baselineIndex.documents.get(document.id);
-        const derivedDocumentIsNew =
-          !baselineDocument ||
-          Boolean(baselineDocument.isNew) ||
-          normaliseComparableText(document.enum) !== normaliseComparableText(baselineDocument.enum) ||
-          normaliseComparableText(document.en) !== normaliseComparableText(baselineDocument.en) ||
-          normaliseComparableText(document.es) !== normaliseComparableText(baselineDocument.es) ||
-          (document.sort ?? null) !== (baselineDocument.sort ?? null);
-        document.isNew = document.manualIsNew ?? derivedDocumentIsNew;
+        const documentAdded = !baselineDocument || Boolean(baselineDocument.isNew);
+        document.isNew = document.manualIsNew ?? documentAdded;
+        syncScalarFieldState(document, 'enum', document.enum, baselineDocument?.enum, documentAdded);
+        syncScalarFieldState(document, 'en', document.en, baselineDocument?.en, documentAdded);
+        syncScalarFieldState(document, 'es', document.es, baselineDocument?.es, documentAdded);
       });
     });
   });
 }
 
-function DownloadIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M10 3.5V11.5M10 11.5L6.75 8.25M10 11.5L13.25 8.25M4 13.75V14.25C4 14.912 4.263 15.547 4.732 16.015C5.2 16.484 5.835 16.75 6.5 16.75H13.5C14.165 16.75 14.8 16.484 15.268 16.015C15.737 15.547 16 14.912 16 14.25V13.75"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+function clearWorkbookHighlights(model: QleWorkbookModel): QleWorkbookModel {
+  const next = cloneModel(model);
+
+  next.events.forEach((event, eventIndex) => {
+    event.eventNumber = eventIndex + 1;
+    event.isNew = false;
+    event.manualIsNew = null;
+    Object.values(event.fieldStates ?? {}).forEach((fieldState) => {
+      if (!fieldState) return;
+      fieldState.isNew = false;
+      fieldState.manualIsNew = null;
+      fieldState.isRemoved = false;
+    });
+
+    event.enumRows.forEach((row) => {
+      row.isNew = false;
+      row.manualIsNew = null;
+      Object.values(row.fieldStates ?? {}).forEach((fieldState) => {
+        if (!fieldState) return;
+        fieldState.isNew = false;
+        fieldState.manualIsNew = null;
+        fieldState.isRemoved = false;
+      });
+    });
+
+    event.categories.forEach((category) => {
+      category.isNew = false;
+      category.manualIsNew = null;
+      Object.values(category.fieldStates ?? {}).forEach((fieldState) => {
+        if (!fieldState) return;
+        fieldState.isNew = false;
+        fieldState.manualIsNew = null;
+        fieldState.isRemoved = false;
+      });
+      ensureCategoryValidationItems(category).forEach((item) => {
+        item.isNew = false;
+        item.manualIsNew = null;
+        item.isRemoved = false;
+        Object.values(item.fieldStates ?? {}).forEach((fieldState) => {
+          if (!fieldState) return;
+          fieldState.isNew = false;
+          fieldState.manualIsNew = null;
+          fieldState.isRemoved = false;
+        });
+      });
+      syncCategoryValidation(category);
+
+      category.documents.forEach((document, documentIndex) => {
+        document.sort = documentIndex + 1;
+        document.isNew = false;
+        document.manualIsNew = null;
+        Object.values(document.fieldStates ?? {}).forEach((fieldState) => {
+          if (!fieldState) return;
+          fieldState.isNew = false;
+          fieldState.manualIsNew = null;
+          fieldState.isRemoved = false;
+        });
+      });
+    });
+  });
+
+  return next;
 }
 
-function CopyIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M7 7.25V5.75C7 4.7835 7.7835 4 8.75 4H14.25C15.2165 4 16 4.7835 16 5.75V11.25C16 12.2165 15.2165 13 14.25 13H12.75M5.75 7H11.25C12.2165 7 13 7.7835 13 8.75V14.25C13 15.2165 12.2165 16 11.25 16H5.75C4.7835 16 4 15.2165 4 14.25V8.75C4 7.7835 4.7835 7 5.75 7Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+function preserveImportedWorkbookHighlights(model: QleWorkbookModel): QleWorkbookModel {
+  model.events.forEach((event, eventIndex) => {
+    event.eventNumber = eventIndex + 1;
+    if (event.isNew) {
+      event.manualIsNew = true;
+    }
+    Object.values(event.fieldStates ?? {}).forEach((fieldState) => {
+      if (fieldState?.isNew) {
+        fieldState.manualIsNew = true;
+      }
+    });
 
-function UndoIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M7 6L3.75 9.25L7 12.5M4.25 9.25H11.25C13.8734 9.25 16 11.3766 16 14"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+    event.enumRows.forEach((row) => {
+      if (row.isNew) {
+        row.manualIsNew = true;
+      }
+      Object.values(row.fieldStates ?? {}).forEach((fieldState) => {
+        if (fieldState?.isNew) {
+          fieldState.manualIsNew = true;
+        }
+      });
+    });
 
-function TrashIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M7.5 3.75H12.5M4 5.5H16M14.75 5.5L14.3125 14.25C14.2727 15.0456 13.6159 15.6667 12.8194 15.6667H7.18056C6.3841 15.6667 5.72726 15.0456 5.6875 14.25L5.25 5.5M8.25 8.5V12.5M11.75 8.5V12.5"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+    event.categories.forEach((category) => {
+      if (category.isNew) {
+        category.manualIsNew = true;
+      }
+      Object.values(category.fieldStates ?? {}).forEach((fieldState) => {
+        if (fieldState?.isNew) {
+          fieldState.manualIsNew = true;
+        }
+      });
 
-function PlusIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M10 4.25V15.75M4.25 10H15.75"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+      ensureCategoryValidationItems(category).forEach((item) => {
+        if (item.isNew) {
+          item.manualIsNew = true;
+        }
+        Object.values(item.fieldStates ?? {}).forEach((fieldState) => {
+          if (fieldState?.isNew) {
+            fieldState.manualIsNew = true;
+          }
+        });
+      });
 
-function ClipboardIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <rect x="5" y="4.5" width="10" height="12" rx="2.2" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M8 4.5V3.75C8 3.336 8.336 3 8.75 3H11.25C11.664 3 12 3.336 12 3.75V4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <path d="M8 8H12.75M8 11H12.75M8 14H11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
+      category.documents.forEach((document, documentIndex) => {
+        document.sort = documentIndex + 1;
+        if (document.isNew) {
+          document.manualIsNew = true;
+        }
+        Object.values(document.fieldStates ?? {}).forEach((fieldState) => {
+          if (fieldState?.isNew) {
+            fieldState.manualIsNew = true;
+          }
+        });
+      });
+    });
+  });
 
-function CodeIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path d="M7.5 6L4 10L7.5 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M12.5 6L16 10L12.5 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M10.75 4.75L9.25 15.25" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function BriefcaseIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <rect x="3" y="6" width="14" height="10" rx="2.5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M7.25 6V5.5C7.25 4.672 7.922 4 8.75 4H11.25C12.078 4 12.75 4.672 12.75 5.5V6" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M3.5 10.5H16.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ChevronUpIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M5.25 12.25L10 7.75L14.75 12.25"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M5.25 7.75L10 12.25L14.75 7.75"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function GearIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M10 12.75C11.5188 12.75 12.75 11.5188 12.75 10C12.75 8.48122 11.5188 7.25 10 7.25C8.48122 7.25 7.25 8.48122 7.25 10C7.25 11.5188 8.48122 12.75 10 12.75Z"
-        stroke="currentColor"
-        strokeWidth="1.6"
-      />
-      <path
-        d="M16 10.75V9.25L14.5606 8.76063C14.4449 8.37132 14.2895 8.00028 14.0981 7.6525L14.75 6.25L13.75 5.25L12.3475 5.90187C11.9997 5.71048 11.6287 5.55507 11.2394 5.43937L10.75 4H9.25L8.76063 5.43937C8.37132 5.55507 8.00028 5.71048 7.6525 5.90187L6.25 5.25L5.25 6.25L5.90187 7.6525C5.71048 8.00028 5.55507 8.37132 5.43937 8.76063L4 9.25V10.75L5.43937 11.2394C5.55507 11.6287 5.71048 11.9997 5.90187 12.3475L5.25 13.75L6.25 14.75L7.6525 14.0981C8.00028 14.2895 8.37132 14.4449 8.76063 14.5606L9.25 16H10.75L11.2394 14.5606C11.6287 14.4449 11.9997 14.2895 12.3475 14.0981L13.75 14.75L14.75 13.75L14.0981 12.3475C14.2895 11.9997 14.4449 11.6287 14.5606 11.2394L16 10.75Z"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SpinnerIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" className="spinner-icon">
-      <path
-        d="M10 3.25C6.27208 3.25 3.25 6.27208 3.25 10"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
+  return model;
 }
 
 function createJiraForm(draft: JiraDraft): JiraDraftForm {
@@ -415,6 +566,298 @@ type ReviewSummaryGroup = {
   title: string;
   items: string[];
 };
+
+const EVENT_TITLE_TOKEN_ALIASES: Record<string, string> = {
+  ADDRESSES: 'ADDRESS',
+  ADOPTED: 'ADOPTION',
+  ADOPTING: 'ADOPTION',
+  CHANGED: 'CHANGE',
+  CHANGES: 'CHANGE',
+  CHILDREN: 'CHILD',
+  CITIZEN: 'CITIZENSHIP',
+  CITIZENSHIP: 'CITIZENSHIP',
+  COVERED: 'COVERAGE',
+  COV: 'COVERAGE',
+  DEPENDENTS: 'DEPENDENT',
+  DIVORCED: 'DIVORCE',
+  DIVORCING: 'DIVORCE',
+  FMLA: 'FMLA',
+  GAINED: 'GAIN',
+  GAINING: 'GAIN',
+  IMMIGRANT: 'IMMIGRATION',
+  IMMIGRANTS: 'IMMIGRATION',
+  INCARCERATED: 'INCARCERATION',
+  INCOMES: 'INCOME',
+  LOST: 'LOSS',
+  LOSING: 'LOSS',
+  MARRIED: 'MARRIAGE',
+  MOVED: 'MOVE',
+  MOVES: 'MOVE',
+  MOVING: 'MOVE',
+  PARTNERSHIP: 'PARTNER',
+  PARTNERS: 'PARTNER',
+  RELEASED: 'RELEASE',
+  RESIDENCY: 'RESIDENCE',
+  SPOUSES: 'SPOUSE',
+  STATUSES: 'STATUS',
+};
+
+const EVENT_TITLE_NOISE_TOKENS = new Set([
+  'A',
+  'AN',
+  'AND',
+  'AS',
+  'AT',
+  'BE',
+  'BY',
+  'DATE',
+  'FOR',
+  'FROM',
+  'IN',
+  'INTO',
+  'IS',
+  'NOW',
+  'OF',
+  'ON',
+  'OR',
+  'OUTSIDE',
+  'THE',
+  'TO',
+  'WITH',
+  'WITHIN',
+]);
+
+const EVENT_TITLE_FALLBACK_NOISE_TOKENS = new Set([
+  ...EVENT_TITLE_NOISE_TOKENS,
+  'CHANGE',
+  'CURRENT',
+  'ELIGIBLE',
+  'FUTURE',
+  'NEW',
+  'PROOF',
+]);
+
+const EVENT_TITLE_DISPLAY_TOKENS: Record<string, string> = {
+  COBRA: 'COBRA',
+  FMLA: 'FMLA',
+  SEP: 'SEP',
+  UI: 'UI',
+  US: 'US',
+};
+
+function canonicalizeEventTitleToken(token: string): string {
+  return EVENT_TITLE_TOKEN_ALIASES[token] ?? token;
+}
+
+function tokenizeEventEnum(enumValue: string): string[] {
+  return enumValue
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean)
+    .map(canonicalizeEventTitleToken)
+    .filter((token) => !EVENT_TITLE_NOISE_TOKENS.has(token));
+}
+
+function hasAnyEventTitleToken(tokens: Set<string>, matches: string[]): boolean {
+  return matches.some((match) => tokens.has(match));
+}
+
+function hasAllEventTitleTokens(tokens: Set<string>, matches: string[]): boolean {
+  return matches.every((match) => tokens.has(match));
+}
+
+function formatEventTitleToken(token: string): string {
+  return EVENT_TITLE_DISPLAY_TOKENS[token] ?? `${token.slice(0, 1)}${token.slice(1).toLowerCase()}`;
+}
+
+function normaliseEventTitleWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function simplifyEventLabelForTitle(value: string): string {
+  return normaliseEventTitleWhitespace(value)
+    .replace(/^change in\s+/i, '')
+    .replace(/^gain eligible\s+/i, '')
+    .replace(/^gain of\s+/i, '')
+    .replace(/^loss of\s+/i, '')
+    .replace(/^new\s+/i, '')
+    .replace(/[.:;,\s]+$/g, '');
+}
+
+function isUsefulEventLabelTitle(value: string): boolean {
+  if (!value) return false;
+  if (value.length > 32) return false;
+  if ((value.match(/\b\w+\b/g) ?? []).length > 4) return false;
+  return true;
+}
+
+function buildEventTitleFromLabels(event: QleEvent): string | null {
+  const simplifiedLabels = event.enumRows
+    .map((row) => simplifyEventLabelForTitle(row.en))
+    .filter(Boolean);
+
+  if (simplifiedLabels.length === 0) {
+    return null;
+  }
+
+  const uniqueLabels = Array.from(new Set(simplifiedLabels));
+
+  if (uniqueLabels.length === 1 && isUsefulEventLabelTitle(uniqueLabels[0])) {
+    return uniqueLabels[0];
+  }
+
+  if (event.enumRows.length === 1 && isUsefulEventLabelTitle(uniqueLabels[0])) {
+    return uniqueLabels[0];
+  }
+
+  return null;
+}
+
+function buildFallbackEventTitle(event: QleEvent): string {
+  const counts = new Map<string, { count: number; firstSeen: number }>();
+  let order = 0;
+
+  event.enumRows.forEach((row) => {
+    tokenizeEventEnum(row.enum).forEach((token) => {
+      if (EVENT_TITLE_FALLBACK_NOISE_TOKENS.has(token)) return;
+      const current = counts.get(token);
+      if (current) {
+        current.count += 1;
+        return;
+      }
+      counts.set(token, { count: 1, firstSeen: order });
+      order += 1;
+    });
+  });
+
+  const rankedTokens = Array.from(counts.entries())
+    .sort((left, right) => {
+      if (right[1].count !== left[1].count) {
+        return right[1].count - left[1].count;
+      }
+      return left[1].firstSeen - right[1].firstSeen;
+    })
+    .slice(0, 3)
+    .map(([token]) => token);
+
+  if (rankedTokens.length === 0) {
+    return 'New Event';
+  }
+
+  return rankedTokens.map(formatEventTitleToken).join(' / ');
+}
+
+function deriveEventShortName(event: QleEvent): string {
+  if (isUnsupportedUiOnlyWorkbookEvent(event)) {
+    return 'Unsupported Event';
+  }
+
+  const labelTitle = buildEventTitleFromLabels(event);
+  if (labelTitle) {
+    return labelTitle;
+  }
+
+  const tokens = new Set(event.enumRows.flatMap((row) => tokenizeEventEnum(row.enum)));
+
+  if (hasAnyEventTitleToken(tokens, ['DEATH'])) {
+    return 'Death';
+  }
+  if (tokens.has('MARRIAGE') && !hasAnyEventTitleToken(tokens, ['DIVORCE', 'DOMESTIC', 'PARTNER'])) {
+    return 'Marriage';
+  }
+  if (tokens.has('DIVORCE') && !hasAnyEventTitleToken(tokens, ['MARRIAGE', 'DOMESTIC', 'PARTNER'])) {
+    return 'Divorce';
+  }
+  if (tokens.has('BIRTH') && !tokens.has('ADOPTION')) {
+    return 'Birth';
+  }
+  if (tokens.has('ADOPTION') && !tokens.has('BIRTH')) {
+    return 'Adoption';
+  }
+  if (hasAnyEventTitleToken(tokens, ['TRIBAL', 'INDIAN', 'ALASKA', 'NATIVE', 'AI', 'AN'])) {
+    return 'Tribal Status';
+  }
+  if (hasAnyEventTitleToken(tokens, ['IMMIGRATION', 'PRESENCE', 'LEGAL', 'CITIZENSHIP'])) {
+    return 'Immigration Status';
+  }
+  if (hasAnyEventTitleToken(tokens, ['MARRIAGE', 'DIVORCE', 'DOMESTIC', 'PARTNER'])) {
+    return 'Marriage / Divorce';
+  }
+  if (hasAnyEventTitleToken(tokens, ['BIRTH', 'ADOPTION', 'FOSTER'])) {
+    return 'Birth / Adoption';
+  }
+  if (hasAnyEventTitleToken(tokens, ['ADDRESS', 'MOVE', 'RESIDENCE', 'STATE'])) {
+    return 'Address Change';
+  }
+  if (
+    hasAllEventTitleTokens(tokens, ['LOSS', 'COVERAGE']) ||
+    (tokens.has('COBRA') && tokens.has('COVERAGE'))
+  ) {
+    return 'Loss of Coverage';
+  }
+  if (hasAllEventTitleTokens(tokens, ['GAIN', 'COVERAGE'])) {
+    return 'Gain of Coverage';
+  }
+  if (hasAnyEventTitleToken(tokens, ['INCOME'])) {
+    return 'Income Change';
+  }
+  if (hasAnyEventTitleToken(tokens, ['DEPENDENT', 'CHILD', 'SPOUSE'])) {
+    return 'Dependent Change';
+  }
+  if (hasAnyEventTitleToken(tokens, ['INCARCERATION', 'RELEASE'])) {
+    return 'Incarceration';
+  }
+
+  return buildFallbackEventTitle(event);
+}
+
+function formatEventGroupLabel(event: QleEvent): string {
+  return `${deriveEventShortName(event)} (${event.eventNumber})`;
+}
+
+function formatReviewGroupTitle(event: QleEvent): string {
+  return `Event ${event.eventNumber} - ${deriveEventShortName(event)}`;
+}
+
+function buildReviewEventKey(eventNumber: number | null): string {
+  return `event:${eventNumber ?? 'other'}`;
+}
+
+function buildReviewEnumKey(eventNumber: number | null, enumName: string): string {
+  return `enum:${eventNumber ?? 'other'}:${enumName.trim().toUpperCase()}`;
+}
+
+function buildReviewCategoryKey(eventNumber: number | null, categoryEnum: string): string {
+  return `category:${eventNumber ?? 'other'}:${categoryEnum.trim().toUpperCase()}`;
+}
+
+function buildReviewDocumentKey(
+  eventNumber: number | null,
+  categoryEnum: string,
+  documentEnum: string,
+): string {
+  return `document:${eventNumber ?? 'other'}:${categoryEnum.trim().toUpperCase()}:${documentEnum.trim().toUpperCase()}`;
+}
+
+function applyEventTitlesToReviewGroups(
+  groups: ReviewSummaryGroup[],
+  model: QleWorkbookModel | null,
+): ReviewSummaryGroup[] {
+  if (!model) return groups;
+
+  const titleByEventNumber = new Map<number, string>(
+    model.events.map((event) => [event.eventNumber, formatReviewGroupTitle(event)]),
+  );
+
+  return groups.map((group) =>
+    group.eventNumber == null
+      ? group
+      : {
+          ...group,
+          title: titleByEventNumber.get(group.eventNumber) ?? group.title,
+        },
+  );
+}
 
 function pushReviewGroupItem(
   groups: Map<string, ReviewSummaryGroup>,
@@ -463,31 +906,160 @@ function mergeReviewGroups(
   });
 }
 
+function buildReviewEntryKey(entry: DiffEntry): string | null {
+  if (entry.entity === 'event') {
+    const match = entry.path.match(/^Event\s+(\d+)/i);
+    return buildReviewEventKey(match ? Number(match[1]) : null);
+  }
+
+  if (entry.entity === 'enum') {
+    const parsed = parseEventEnumPath(entry.path);
+    return buildReviewEnumKey(parsed.eventNumber, parsed.enumName);
+  }
+
+  if (entry.entity === 'category') {
+    const parsed = parseCategoryPath(entry.path);
+    return buildReviewCategoryKey(parsed.eventNumber, parsed.categoryEnum);
+  }
+
+  if (entry.entity === 'document') {
+    const parsed = parseDocumentPath(entry.path);
+    return buildReviewDocumentKey(parsed.eventNumber, parsed.categoryEnum, parsed.documentEnum);
+  }
+
+  return null;
+}
+
 function buildMarkedNewReviewGroups(
   model: QleWorkbookModel | null,
-  originalModel: QleWorkbookModel | null,
+  reviewEntries: DiffEntry[],
+  originalModel: QleWorkbookModel | null = null,
 ): ReviewSummaryGroup[] {
   if (!model) return [];
   const groups = new Map<string, ReviewSummaryGroup>();
+  const originalIndex = buildModelIndex(originalModel);
+  const existingReviewKeys = new Set(
+    reviewEntries
+      .map((entry) => buildReviewEntryKey(entry))
+      .filter((key): key is string => Boolean(key)),
+  );
 
   model.events.forEach((event) => {
+    const activeEnumRows = event.enumRows.filter((row) => !row.isRemoved);
+    const eventLikelyRepresentsInstructions =
+      event.isNew && (activeEnumRows.length === 0 || activeEnumRows.some((row) => !row.isNew));
+
+    if (
+      eventLikelyRepresentsInstructions &&
+      !event.isRemoved &&
+      !existingReviewKeys.has(buildReviewEventKey(event.eventNumber))
+    ) {
+      pushReviewGroupItem(
+        groups,
+        event.eventNumber,
+        [
+          'Update event instructions:',
+          `  Event: Event ${event.eventNumber}`,
+          `  English instructions: "${event.instructionsEn}"`,
+          `  Spanish instructions: "${event.instructionsEs}"`,
+        ].join('\n'),
+      );
+    }
+
+    if (!event.isRemoved && !existingReviewKeys.has(buildReviewEventKey(event.eventNumber))) {
+      if (getFieldState(event, 'instructionsEn')?.isNew) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          formatFieldStateReviewItem(
+            'Mark field as new',
+            [{ label: 'Event', value: `Event ${event.eventNumber}` }],
+            'English instructions',
+            event.instructionsEn,
+          ),
+        );
+      }
+      if (getFieldState(event, 'instructionsEs')?.isNew) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          formatFieldStateReviewItem(
+            'Mark field as new',
+            [{ label: 'Event', value: `Event ${event.eventNumber}` }],
+            'Spanish instructions',
+            event.instructionsEs,
+          ),
+        );
+      }
+    }
+
     event.enumRows.forEach((row) => {
-      const originalEvent = originalModel?.events.find((item) => item.id === event.id);
-      const existedInOriginal = originalEvent?.enumRows.some((item) => item.id === row.id);
-      if (row.isNew && !row.isRemoved && !existedInOriginal) {
+      const rowKey = buildReviewEnumKey(event.eventNumber, row.enum);
+      if (
+        row.isNew &&
+        !row.isRemoved &&
+        row.enum.trim() &&
+        !existingReviewKeys.has(rowKey)
+      ) {
         pushReviewGroupItem(
           groups,
           event.eventNumber,
           formatReviewItemWithLabels('Add enum', [{ label: 'Enum', value: row.enum }], row.en, row.es),
         );
       }
+
+      if (!row.isRemoved && !row.isNew && !existingReviewKeys.has(rowKey)) {
+        if (getFieldState(row, 'enum')?.isNew) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Mark field as new',
+              [{ label: 'Event', value: `Event ${event.eventNumber}` }],
+              'Enum',
+              row.enum,
+            ),
+          );
+        }
+        if (getFieldState(row, 'en')?.isNew) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Mark field as new',
+              [{ label: 'Enum', value: row.enum }],
+              'English label',
+              row.en,
+            ),
+          );
+        }
+        if (getFieldState(row, 'es')?.isNew) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Mark field as new',
+              [{ label: 'Enum', value: row.enum }],
+              'Spanish label',
+              row.es,
+            ),
+          );
+        }
+      }
     });
 
     event.categories.forEach((category) => {
-      const originalEvent = originalModel?.events.find((item) => item.id === event.id);
-      const originalCategory = originalEvent?.categories.find((item) => item.id === category.id);
-      const existedInOriginal = Boolean(originalCategory);
-      if (category.isNew && !category.isRemoved && !existedInOriginal) {
+      const originalCategory = originalIndex.categories.get(category.id);
+      const originalValidationItems = originalCategory
+        ? ensureCategoryValidationItems(originalCategory)
+        : [];
+      const categoryKey = buildReviewCategoryKey(event.eventNumber, category.enum);
+      if (
+        category.isNew &&
+        !category.isRemoved &&
+        category.enum.trim() &&
+        !existingReviewKeys.has(categoryKey)
+      ) {
         pushReviewGroupItem(
           groups,
           event.eventNumber,
@@ -500,16 +1072,144 @@ function buildMarkedNewReviewGroups(
         );
       }
 
+      if (!category.isRemoved && !category.isNew && !existingReviewKeys.has(categoryKey)) {
+        if (getFieldState(category, 'enum')?.isNew) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Mark field as new',
+              [{ label: 'Event', value: `Event ${event.eventNumber}` }],
+              'Category enum',
+              category.enum,
+            ),
+          );
+        }
+        if (getFieldState(category, 'en')?.isNew) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Mark field as new',
+              [{ label: 'Category', value: category.enum }],
+              'English label',
+              category.en,
+            ),
+          );
+        }
+        if (getFieldState(category, 'es')?.isNew) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Mark field as new',
+              [{ label: 'Category', value: category.enum }],
+              'Spanish label',
+              category.es,
+            ),
+          );
+        }
+        if (getFieldState(category, 'validation')?.isNew && (category.validationItems ?? []).length === 0) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            [
+              'Update validation rules:',
+              `  Category: ${category.enum}`,
+              `  Validation rules: ${category.validation}`,
+            ].join('\n'),
+          );
+        }
+      }
+
+      (category.validationItems ?? []).forEach((item, itemIndex) => {
+        const originalItem =
+          originalValidationItems.find((candidate) => candidate.id === item.id) ?? null;
+        const keyFieldIsNew = Boolean(getFieldState(item, 'key')?.isNew);
+        const valueFieldIsNew = Boolean(getFieldState(item, 'value')?.isNew);
+        if (!category.isRemoved && item.isNew && !item.isRemoved && item.key.trim()) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationRuleUpdateReviewItem(category.enum, item, itemIndex),
+          );
+          return;
+        }
+
+        if (category.isRemoved || item.isRemoved) {
+          return;
+        }
+
+        if (originalItem && hasComparableTextChanged(item.key, originalItem.key)) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationRuleUpdateReviewItem(category.enum, item, itemIndex, originalItem),
+          );
+          return;
+        }
+
+        if (originalItem && hasComparableTextChanged(item.value, originalItem.value)) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationRuleUpdateReviewItem(category.enum, item, itemIndex, originalItem),
+          );
+          return;
+        }
+
+        if (!item.isRemoved && valueFieldIsNew && (!keyFieldIsNew || isFixedValidationRuleKey(item.key))) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationRuleUpdateReviewItem(category.enum, item, itemIndex, originalItem),
+          );
+          return;
+        }
+
+        if (item.isNew || !validationItemHasFieldStateChanges(item)) {
+          return;
+        }
+
+        if (getFieldState(item, 'key')?.isNew) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationItemFieldReviewItem(
+              'Mark field as new',
+              category.enum,
+              item,
+              itemIndex,
+              'Rule key',
+              item.key,
+            ),
+          );
+        }
+
+        if (getFieldState(item, 'value')?.isNew) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationItemFieldReviewItem(
+              'Mark field as new',
+              category.enum,
+              item,
+              itemIndex,
+              'Rule value',
+              item.value,
+            ),
+          );
+        }
+      });
+
       category.documents.forEach((document) => {
-        const documentExistedInOriginal = originalCategory?.documents.some(
-          (item) => item.id === document.id,
-        );
+        const documentKey = buildReviewDocumentKey(event.eventNumber, category.enum, document.enum);
         if (
           document.isNew &&
           !document.isRemoved &&
           !category.isRemoved &&
           document.enum.trim() &&
-          !documentExistedInOriginal
+          !existingReviewKeys.has(documentKey)
         ) {
           pushReviewGroupItem(
             groups,
@@ -524,6 +1224,51 @@ function buildMarkedNewReviewGroups(
               document.es,
             ),
           );
+        }
+
+        if (!document.isRemoved && !document.isNew && !category.isRemoved && !existingReviewKeys.has(documentKey)) {
+          if (getFieldState(document, 'enum')?.isNew) {
+            pushReviewGroupItem(
+              groups,
+              event.eventNumber,
+              formatFieldStateReviewItem(
+                'Mark field as new',
+                [{ label: 'Category', value: category.enum }],
+                'Document enum',
+                document.enum,
+              ),
+            );
+          }
+          if (getFieldState(document, 'en')?.isNew) {
+            pushReviewGroupItem(
+              groups,
+              event.eventNumber,
+              formatFieldStateReviewItem(
+                'Mark field as new',
+                [
+                  { label: 'Category', value: category.enum },
+                  { label: 'Document', value: document.enum },
+                ],
+                'English label',
+                document.en,
+              ),
+            );
+          }
+          if (getFieldState(document, 'es')?.isNew) {
+            pushReviewGroupItem(
+              groups,
+              event.eventNumber,
+              formatFieldStateReviewItem(
+                'Mark field as new',
+                [
+                  { label: 'Category', value: category.enum },
+                  { label: 'Document', value: document.enum },
+                ],
+                'Spanish label',
+                document.es,
+              ),
+            );
+          }
         }
       });
     });
@@ -541,20 +1286,133 @@ function buildMarkedRemovedReviewGroups(model: QleWorkbookModel | null): ReviewS
   const groups = new Map<string, ReviewSummaryGroup>();
 
   model.events.forEach((event) => {
+    if (getFieldState(event, 'instructionsEn')?.isRemoved) {
+      pushReviewGroupItem(
+        groups,
+        event.eventNumber,
+        formatFieldStateReviewItem(
+          'Remove field',
+          [{ label: 'Event', value: `Event ${event.eventNumber}` }],
+          'English instructions',
+          event.instructionsEn,
+        ),
+      );
+    }
+    if (getFieldState(event, 'instructionsEs')?.isRemoved) {
+      pushReviewGroupItem(
+        groups,
+        event.eventNumber,
+        formatFieldStateReviewItem(
+          'Remove field',
+          [{ label: 'Event', value: `Event ${event.eventNumber}` }],
+          'Spanish instructions',
+          event.instructionsEs,
+        ),
+      );
+    }
+
     if (event.isRemoved) {
       pushReviewGroupItem(groups, event.eventNumber, `Remove event: Event ${event.eventNumber}`);
     }
 
     event.enumRows.forEach((row) => {
+      if (getFieldState(row, 'enum')?.isRemoved) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          formatFieldStateReviewItem(
+            'Remove field',
+            [{ label: 'Event', value: `Event ${event.eventNumber}` }],
+            'Enum',
+            row.enum,
+          ),
+        );
+      }
+      if (getFieldState(row, 'en')?.isRemoved) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          formatFieldStateReviewItem(
+            'Remove field',
+            [{ label: 'Enum', value: row.enum }],
+            'English label',
+            row.en,
+          ),
+        );
+      }
+      if (getFieldState(row, 'es')?.isRemoved) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          formatFieldStateReviewItem(
+            'Remove field',
+            [{ label: 'Enum', value: row.enum }],
+            'Spanish label',
+            row.es,
+          ),
+        );
+      }
       if (row.isRemoved) {
         pushReviewGroupItem(groups, event.eventNumber, `Remove enum: ${row.enum}`);
       }
     });
 
     event.categories.forEach((category) => {
+      if (getFieldState(category, 'enum')?.isRemoved) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          formatFieldStateReviewItem(
+            'Remove field',
+            [{ label: 'Event', value: `Event ${event.eventNumber}` }],
+            'Category enum',
+            category.enum,
+          ),
+        );
+      }
+      if (getFieldState(category, 'en')?.isRemoved) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          formatFieldStateReviewItem(
+            'Remove field',
+            [{ label: 'Category', value: category.enum }],
+            'English label',
+            category.en,
+          ),
+        );
+      }
+      if (getFieldState(category, 'es')?.isRemoved) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          formatFieldStateReviewItem(
+            'Remove field',
+            [{ label: 'Category', value: category.enum }],
+            'Spanish label',
+            category.es,
+          ),
+        );
+      }
+      if (
+        getFieldState(category, 'validation')?.isRemoved &&
+        !category.isRemoved &&
+        (category.validationItems ?? []).length === 0
+      ) {
+        pushReviewGroupItem(
+          groups,
+          event.eventNumber,
+          [
+            'Remove field:',
+            `  Category: ${category.enum}`,
+            `  Validation rules: ${category.validation}`,
+          ].join('\n'),
+        );
+      }
       const removedDocuments = category.documents.filter(
         (document) => (document.isRemoved || category.isRemoved) && document.enum.trim(),
       );
+      const removedValidationItems = (category.validationItems ?? []).filter((item) => item.isRemoved);
 
       if (category.isRemoved) {
         if (removedDocuments.length > 0) {
@@ -572,7 +1430,128 @@ function buildMarkedRemovedReviewGroups(model: QleWorkbookModel | null): ReviewS
         return;
       }
 
+      removedValidationItems.forEach((item, itemIndex) => {
+        if (item.key.trim()) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            [
+              'Remove validation rule:',
+              `  Category: ${category.enum}`,
+              `  ${item.key.trim()}: ${item.value.trim()}`,
+            ].join('\n'),
+          );
+          return;
+        }
+
+        if (getFieldState(item, 'key')?.isRemoved) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationItemFieldReviewItem(
+              'Remove field',
+              category.enum,
+              item,
+              itemIndex,
+              'Rule key',
+              item.key,
+            ),
+          );
+        }
+        if (getFieldState(item, 'value')?.isRemoved) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationItemFieldReviewItem(
+              'Remove field',
+              category.enum,
+              item,
+              itemIndex,
+              'Rule value',
+              item.value,
+            ),
+          );
+        }
+      });
+
+      (category.validationItems ?? []).forEach((item, itemIndex) => {
+        if (item.isRemoved || !validationItemHasFieldStateChanges(item)) {
+          return;
+        }
+
+        if (getFieldState(item, 'key')?.isRemoved) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationItemFieldReviewItem(
+              'Remove field',
+              category.enum,
+              item,
+              itemIndex,
+              'Rule key',
+              item.key,
+            ),
+          );
+        }
+        if (getFieldState(item, 'value')?.isRemoved) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatValidationItemFieldReviewItem(
+              'Remove field',
+              category.enum,
+              item,
+              itemIndex,
+              'Rule value',
+              item.value,
+            ),
+          );
+        }
+      });
+
       removedDocuments.forEach((document) => {
+        if (getFieldState(document, 'enum')?.isRemoved) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Remove field',
+              [{ label: 'Category', value: category.enum }],
+              'Document enum',
+              document.enum,
+            ),
+          );
+        }
+        if (getFieldState(document, 'en')?.isRemoved) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Remove field',
+              [
+                { label: 'Category', value: category.enum },
+                { label: 'Document', value: document.enum },
+              ],
+              'English label',
+              document.en,
+            ),
+          );
+        }
+        if (getFieldState(document, 'es')?.isRemoved) {
+          pushReviewGroupItem(
+            groups,
+            event.eventNumber,
+            formatFieldStateReviewItem(
+              'Remove field',
+              [
+                { label: 'Category', value: category.enum },
+                { label: 'Document', value: document.enum },
+              ],
+              'Spanish label',
+              document.es,
+            ),
+          );
+        }
         pushReviewGroupItem(
           groups,
           event.eventNumber,
@@ -663,6 +1642,77 @@ function formatReviewItemWithLabels(
   ].join('\n');
 }
 
+function formatFieldStateReviewItem(
+  prefix: string,
+  lines: { label: string; value: string }[],
+  fieldLabel: string,
+  value: string,
+) {
+  return [
+    `${prefix}:`,
+    ...lines.map((line) => `  ${line.label}: ${line.value}`),
+    `  ${fieldLabel}: "${value}"`,
+  ].join('\n');
+}
+
+function formatValidationItemFieldReviewItem(
+  prefix: string,
+  categoryEnum: string,
+  item: QleValidationItem,
+  itemIndex: number,
+  fieldLabel: string,
+  value: string,
+) {
+  return formatFieldStateReviewItem(
+    prefix,
+    [
+      { label: 'Category', value: categoryEnum },
+      { label: 'Validation rule', value: getValidationItemLabel(item, itemIndex) },
+    ],
+    fieldLabel,
+    value,
+  );
+}
+
+function formatValidationRuleUpdateReviewItem(
+  categoryEnum: string,
+  item: QleValidationItem,
+  itemIndex: number,
+  originalItem?: QleValidationItem | null,
+) {
+  const ruleLabel =
+    normaliseComparableText(item.key) ||
+    normaliseComparableText(originalItem?.key) ||
+    getValidationItemLabel(item, itemIndex);
+  const lines = [
+    'Update validation rule:',
+    `  Category: ${categoryEnum}`,
+    `  Validation rule: ${ruleLabel}`,
+  ];
+  let hasDetailLine = false;
+  const keyChanged = originalItem ? hasComparableTextChanged(item.key, originalItem.key) : false;
+  const valueChanged = originalItem ? hasComparableTextChanged(item.value, originalItem.value) : false;
+
+  if (keyChanged) {
+    lines.push(formatChangedReviewValueLine('Rule key', originalItem?.key, item.key));
+    hasDetailLine = true;
+  }
+
+  if (valueChanged) {
+    lines.push(formatChangedReviewValueLine('Rule value', originalItem?.value, item.value));
+    hasDetailLine = true;
+  } else if (!originalItem) {
+    lines.push(`  Rule value: "${normaliseComparableText(item.value)}"`);
+    hasDetailLine = true;
+  }
+
+  if (!hasDetailLine) {
+    lines.push(`  Rule value: "${normaliseComparableText(item.value)}"`);
+  }
+
+  return lines.join('\n');
+}
+
 function shouldRenderReviewItem(item: string): boolean {
   if (!item.startsWith('Add document:')) return true;
   return item
@@ -716,6 +1766,7 @@ function buildLaymanSummary(
   originalModel?: QleWorkbookModel | null,
 ): ReviewSummaryGroup[] {
   const groups = new Map<string, ReviewSummaryGroup>();
+  const originalIndex = buildModelIndex(originalModel ?? null);
   const reviewEntries = filterReviewDiffEntries(diff.entries, model ?? null);
 
   reviewEntries.slice(0, 10).forEach((entry) => {
@@ -758,9 +1809,26 @@ function buildLaymanSummary(
             ? 'Update category'
             : 'Remove category';
       const category =
-        entry.kind === 'added'
+        entry.kind === 'added' || entry.kind === 'changed'
           ? findCategoryForReview(model ?? null, parsed.eventNumber, parsed.categoryEnum)
           : null;
+      const originalCategory =
+        entry.kind === 'changed' && category
+          ? originalIndex.categories.get(category.id) ?? null
+          : null;
+      const validationOnlyChange =
+        entry.kind === 'changed' &&
+        category != null &&
+        originalCategory != null &&
+        !hasComparableTextChanged(category.enum, originalCategory.enum) &&
+        !hasComparableTextChanged(category.en, originalCategory.en) &&
+        !hasComparableTextChanged(category.es, originalCategory.es) &&
+        hasComparableTextChanged(category.validation, originalCategory.validation);
+
+      if (validationOnlyChange) {
+        return;
+      }
+
       pushReviewGroupItem(
         groups,
         parsed.eventNumber,
@@ -843,13 +1911,13 @@ function buildLaymanSummary(
   });
 
   const markedRemovedGroups = buildMarkedRemovedReviewGroups(model ?? null);
-  const markedNewGroups = buildMarkedNewReviewGroups(model ?? null, originalModel ?? null);
+  const markedNewGroups = buildMarkedNewReviewGroups(model ?? null, reviewEntries, originalModel ?? null);
   const summary = mergeReviewGroups(mergeReviewGroups(diffSummary, markedRemovedGroups), markedNewGroups);
 
   if (summary.length === 0) {
     return [{ eventNumber: null, title: 'Changes', items: ['No structural changes were detected yet.'] }];
   }
-  return summary;
+  return applyEventTitlesToReviewGroups(summary, model ?? originalModel ?? null);
 }
 
 function extractStateFromFileName(fileName: string): string {
@@ -862,6 +1930,90 @@ function extractStateFromFileName(fileName: string): string {
 
 function buildReviewJiraTitle(fileName: string): string {
   return `Update QLE upload document for ${extractStateFromFileName(fileName)}`;
+}
+
+const UPLOAD_FILE_NAME_PATTERN = /^uploadDoc_[A-Z0-9]+(?:_[A-Z0-9]+)*_v?\d+(?:\.\d+)*_\d{2}-\d{2}-\d{4}\.xlsx$/;
+
+type PendingUploadAction = 'import' | 'format';
+
+type PendingUploadState = {
+  action: PendingUploadAction;
+  originalFile: File;
+  stateCode: string;
+  versionText: string;
+  dateText: string;
+  customName: string;
+  suggestedNames: string[];
+  error: string;
+};
+
+function formatUploadDate(date = new Date()): string {
+  return [
+    String(date.getDate()).padStart(2, '0'),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getFullYear()),
+  ].join('-');
+}
+
+function isValidUploadFileName(fileName: string): boolean {
+  return UPLOAD_FILE_NAME_PATTERN.test(fileName.trim());
+}
+
+function sanitiseStateTokenInput(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function normaliseStateToken(value: string): string {
+  const cleaned = sanitiseStateTokenInput(value);
+  return cleaned || 'STATE';
+}
+
+function extractUploadStateSeed(fileName: string): string {
+  const extracted = extractStateFromFileName(fileName);
+  return extracted === 'State' ? '' : normaliseStateToken(extracted);
+}
+
+function extractVersionFromFileName(fileName: string): string {
+  const base = fileName.replace(/\.[^.]+$/, '');
+  const uploadMatch = base.match(/uploadDoc_[A-Z0-9]+(?:_[A-Z0-9]+)*_v?(\d+(?:\.\d+)*)_/i);
+  if (uploadMatch) return uploadMatch[1];
+
+  const versions = base.match(/\d+(?:\.\d+)+/g) ?? [];
+  return versions[0] ?? '1.0';
+}
+
+function extractDateFromFileName(fileName: string, fallback = new Date()): string {
+  const base = fileName.replace(/\.[^.]+$/, '');
+  const match =
+    base.match(/(\d{2})[.-](\d{2})[.-](\d{4})/) ??
+    base.match(/(\d{4})-(\d{2})-(\d{2})/);
+
+  if (!match) {
+    return formatUploadDate(fallback);
+  }
+
+  if (match[1].length === 4) {
+    return `${match[3]}-${match[2]}-${match[1]}`;
+  }
+
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function buildUploadFileName(state: string, version: string, dateText: string): string {
+  const normalisedVersion = version.trim().replace(/^v/i, '') || '1.0';
+  return `uploadDoc_${normaliseStateToken(state)}_v${normalisedVersion}_${dateText}.xlsx`;
+}
+
+function buildUploadFileNameSuggestions(stateCode: string, version: string, detectedDate: string): string[] {
+  const state = stateCode.trim();
+  if (!state) return [];
+  const currentDate = formatUploadDate();
+
+  return [
+    buildUploadFileName(state, version, detectedDate),
+    buildUploadFileName(state, version, currentDate),
+    buildUploadFileName(state, '1.0', currentDate),
+  ].filter((value, index, values) => values.indexOf(value) === index);
 }
 
 const ACTIVE_FLOW_STORAGE_KEY = 'qle-dashboard-active-flow';
@@ -927,82 +2079,8 @@ function parseDocumentPath(
   };
 }
 
-function highlightChangedText(before: string, after: string): ReactNode {
-  if (!before || before === after) return after;
-
-  let prefix = 0;
-  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) {
-    prefix += 1;
-  }
-
-  let beforeSuffix = before.length - 1;
-  let afterSuffix = after.length - 1;
-  while (
-    beforeSuffix >= prefix &&
-    afterSuffix >= prefix &&
-    before[beforeSuffix] === after[afterSuffix]
-  ) {
-    beforeSuffix -= 1;
-    afterSuffix -= 1;
-  }
-
-  const start = after.slice(0, prefix);
-  const changed = after.slice(prefix, afterSuffix + 1);
-  const end = after.slice(afterSuffix + 1);
-
-  if (!changed) return after;
-
-  return (
-    <>
-      {start}
-      <span className="detail-highlight">{changed}</span>
-      {end}
-    </>
-  );
-}
-
-function formatDetailedChangeText(
-  entry: DiffEntry,
-  model: QleWorkbookModel | null,
-  originalModel: QleWorkbookModel | null,
-): string[] {
-  if (entry.entity === 'enum') {
-    const enumRow = findEnumRowForDiff(model, entry);
-    if (!enumRow) return [`[${entry.kind}] enum ${entry.path}`];
-    return [
-      `Event#: ${enumRow.eventNumber}`,
-      `Enum: ${enumRow.enumName}`,
-      `English label: "${enumRow.en}"`,
-      `Spanish label: "${enumRow.es}"`,
-    ];
-  }
-
-  if (entry.entity === 'category' && entry.kind === 'changed') {
-    const parsed = parseCategoryPath(entry.path);
-    const fromMatch = entry.detail.match(/^Changed from (.+)$/);
-    const fromValue = fromMatch ? fromMatch[1] : entry.detail;
-    const previousCategory = fromValue.replace(/^Event\s+\d+\s*>\s*/, '');
-    return [`[Change] Category: Event ${parsed.eventNumber ?? '?'} > ${previousCategory} to ${parsed.categoryEnum}`];
-  }
-
-  if (entry.entity === 'document' && entry.kind === 'added') {
-    const parsed = parseDocumentPath(entry.path);
-    return [
-      '[Added] Document:',
-      `  Event ${parsed.eventNumber ?? '?'}`,
-      `  Category: ${parsed.categoryEnum}`,
-      `  Document: ${parsed.documentEnum}`,
-    ];
-  }
-
-  return [`[${entry.kind}] ${entry.entity} ${entry.path}`];
-}
-
 function buildReviewDescription(
   summary: ReviewSummaryGroup[],
-  diff: DiffSummary | null,
-  model: QleWorkbookModel | null,
-  originalModel: QleWorkbookModel | null,
 ): string {
   const lines = ['Changes To Implement'];
   summary.forEach((group) => {
@@ -1014,71 +2092,6 @@ function buildReviewDescription(
     });
   });
   return lines.join('\n');
-}
-
-function renderDetailedChange(
-  entry: DiffEntry,
-  model: QleWorkbookModel | null,
-  originalModel: QleWorkbookModel | null,
-): ReactNode {
-  if (entry.entity === 'enum') {
-    const enumRow = findEnumRowForDiff(model, entry);
-    const originalEnumRow = entry.kind === 'changed' ? findOriginalEnumRowForDiff(originalModel, entry) : null;
-    if (!enumRow) {
-      return `[${entry.kind}] enum ${entry.path}`;
-    }
-    return (
-      <div className="detail-card">
-        <div className="detail-line">
-          Event#: {enumRow.eventNumber}
-        </div>
-        <div className="detail-line">
-          Enum: {enumRow.enumName}
-        </div>
-        <div className="detail-line">
-          English label: "
-          {originalEnumRow ? highlightChangedText(originalEnumRow.en, enumRow.en) : enumRow.en}"
-        </div>
-        <div className="detail-line">
-          Spanish label: "
-          {originalEnumRow ? highlightChangedText(originalEnumRow.es, enumRow.es) : enumRow.es}"
-        </div>
-      </div>
-    );
-  }
-
-  if (entry.entity === 'category' && entry.kind === 'changed') {
-    const parsed = parseCategoryPath(entry.path);
-    const fromMatch = entry.detail.match(/^Changed from (.+)$/);
-    const fromValue = fromMatch ? fromMatch[1] : entry.detail;
-    const previousCategory = fromValue.replace(/^Event\s+\d+\s*>\s*/, '');
-    return (
-      <div className="detail-card">
-        <div className="detail-line">
-          [Change] Category: Event {parsed.eventNumber ?? '?'} &gt; {previousCategory} to{' '}
-          <span className="detail-highlight">{parsed.categoryEnum}</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (entry.entity === 'document' && entry.kind === 'added') {
-    const parsed = parseDocumentPath(entry.path);
-    return (
-      <div className="detail-card">
-        <div className="detail-line">[Added] Document:</div>
-        <div className="detail-line detail-indent">Event {parsed.eventNumber ?? '?'}</div>
-        <div className="detail-line detail-indent">
-          Category: {parsed.categoryEnum}
-        </div>
-        <div className="detail-line detail-indent">
-          Document: {parsed.documentEnum}
-        </div>
-      </div>
-    );
-  }
-
-  return `[${entry.kind}] ${entry.entity} ${entry.path}`;
 }
 
 export function App() {
@@ -1113,11 +2126,13 @@ export function App() {
   const [enumQuery, setEnumQuery] = useState<string>('');
   const [eventOptionsLoading, setEventOptionsLoading] = useState(false);
   const [exportVersion, setExportVersion] = useState(1);
+  const [rebaseModalOpen, setRebaseModalOpen] = useState(false);
   const [readyModalOpen, setReadyModalOpen] = useState(false);
   const [readyJiraKey, setReadyJiraKey] = useState('');
   const [readyResult, setReadyResult] = useState<ReadyForEngineeringResult | null>(null);
   const [jiraCreateStatus, setJiraCreateStatus] = useState<string>('');
   const [jiraCreateError, setJiraCreateError] = useState<string>('');
+  const [pendingUpload, setPendingUpload] = useState<PendingUploadState | null>(null);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [reviewSummary, setReviewSummary] = useState<ReviewSummaryGroup[]>([]);
   const [reviewDownloadUrl, setReviewDownloadUrl] = useState<string>('');
@@ -1149,6 +2164,7 @@ export function App() {
   const [status, setStatus] = useState<string>('Upload a workbook to get started.');
   const [busy, setBusy] = useState(false);
   const [lastAutosavedAt, setLastAutosavedAt] = useState<string | null>(null);
+  const [pendingValidationFocusPath, setPendingValidationFocusPath] = useState<string | null>(null);
   const lastScrollYRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
   const collapseAnchorRef = useRef(0);
@@ -1157,6 +2173,22 @@ export function App() {
   const selectedEvent = useMemo(
     () => edited?.events.find((event) => event.id === selectedEventId) ?? null,
     [edited, selectedEventId],
+  );
+  const selectedEventIndex = useMemo(
+    () => edited?.events.findIndex((event) => event.id === selectedEventId) ?? -1,
+    [edited, selectedEventId],
+  );
+  const selectedEventPathPrefix = selectedEventIndex >= 0 ? `events.${selectedEventIndex}` : 'events.0';
+  const eventLabelById = useMemo(
+    () =>
+      new Map(
+        (edited?.events ?? []).map((event) => [event.id, formatEventGroupLabel(event)]),
+      ),
+    [edited],
+  );
+  const validationIssueByPath = useMemo(
+    () => new Map(validationIssues.map((issue) => [issue.path, issue])),
+    [validationIssues],
   );
   const dbConnectionSummary = useMemo(() => {
     if (!dbConfigForm.host.trim() || !dbConfigForm.database.trim()) return '';
@@ -1171,6 +2203,22 @@ export function App() {
     if (!downloadedModel || !edited) return false;
     return JSON.stringify(downloadedModel) !== JSON.stringify(edited);
   }, [downloadedModel, edited]);
+
+  useEffect(() => {
+    if (!pendingValidationFocusPath) {
+      return;
+    }
+
+    const escapedPath = escapeAttributeSelectorValue(pendingValidationFocusPath);
+    const target = document.querySelector<HTMLElement>(`[data-field-path="${escapedPath}"]`);
+    if (!target) {
+      return;
+    }
+
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.focus();
+    setPendingValidationFocusPath(null);
+  }, [edited, pendingValidationFocusPath, selectedEventId]);
   const developerExecutionItems = useMemo(
     () =>
       developerRunStatus?.steps ?? [
@@ -1431,6 +2479,137 @@ export function App() {
     setStatus(`Draft auto-saved at ${timestamp}.`);
   }
 
+  function buildFieldValidationProps(path: string) {
+    const issue = validationIssueByPath.get(path);
+    return {
+      'data-field-path': path,
+      'aria-invalid': issue ? true : undefined,
+      className: issue ? 'field-error' : undefined,
+      title: issue?.message,
+    };
+  }
+
+  function buildManagedFieldProps(holder: FieldStateHolder, fieldKey: string, path: string) {
+    const issue = validationIssueByPath.get(path);
+    const fieldState = getFieldState(holder, fieldKey);
+    const className = [
+      issue ? 'field-error' : '',
+      fieldState?.isRemoved ? 'field-removed' : '',
+      fieldState?.isNew && !fieldState?.isRemoved ? 'field-new' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    return {
+      'data-field-path': path,
+      'aria-invalid': issue ? true : undefined,
+      className: className || undefined,
+      title: issue?.message,
+    };
+  }
+
+  function renderFieldActionRow(
+    target: FieldStateHolder,
+    fieldKey: string,
+    onToggleNew: (checked: boolean) => void,
+    onToggleRemove: () => void,
+    onDelete: () => void,
+    options: FieldActionRowOptions = {},
+  ) {
+    const fieldState = getFieldState(target, fieldKey);
+    const scopeLabel = options.scopeLabel ?? 'field';
+    const isIconOnly = options.iconOnly ?? true;
+    const revealOnHover = options.revealOnHover ?? true;
+    const className = [
+      'field-action-row',
+      isIconOnly ? 'icon-only' : '',
+      revealOnHover ? 'reveal-on-hover' : '',
+      fieldStateHasChanges(fieldState) ? 'is-active' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    if (isIconOnly) {
+      return (
+        <div className={className}>
+          <button
+            type="button"
+            className={`ghost icon-only-button field-action-icon new-action-icon${fieldState?.isNew ? ' is-active' : ''}`}
+            title={fieldState?.isNew ? `Unmark ${scopeLabel} as new` : `Mark ${scopeLabel} as new`}
+            aria-label={fieldState?.isNew ? `Unmark ${scopeLabel} as new` : `Mark ${scopeLabel} as new`}
+            aria-pressed={Boolean(fieldState?.isNew)}
+            disabled={Boolean(fieldState?.isRemoved)}
+            onClick={() => onToggleNew(!Boolean(fieldState?.isNew))}
+          >
+            <NewBadgeIcon />
+          </button>
+          <button
+            type="button"
+            className={`${
+              fieldState?.isRemoved ? 'ghost' : 'ghost danger'
+            } icon-only-button field-action-icon${fieldState?.isRemoved ? ' is-active' : ''}`}
+            title={fieldState?.isRemoved ? `Restore ${scopeLabel}` : `Mark ${scopeLabel} as removed`}
+            aria-label={fieldState?.isRemoved ? `Restore ${scopeLabel}` : `Mark ${scopeLabel} as removed`}
+            aria-pressed={Boolean(fieldState?.isRemoved)}
+            onClick={onToggleRemove}
+          >
+            {fieldState?.isRemoved ? <UndoIcon /> : <RemoveFileIcon />}
+          </button>
+          <button
+            type="button"
+            className="ghost danger icon-only-button field-action-icon"
+            title={`Delete ${scopeLabel}`}
+            aria-label={`Delete ${scopeLabel}`}
+            onClick={onDelete}
+          >
+            <TrashIcon />
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className={className}>
+        <label className="checkbox-row field-action-toggle">
+          <input
+            type="checkbox"
+            checked={Boolean(fieldState?.isNew)}
+            disabled={Boolean(fieldState?.isRemoved)}
+            onBlur={noteAutosave}
+            onChange={(event) => onToggleNew(event.target.checked)}
+          />
+          New
+        </label>
+        <button
+          type="button"
+          className={fieldState?.isRemoved ? 'ghost icon-button' : 'ghost danger icon-button'}
+          onClick={onToggleRemove}
+          title={fieldState?.isRemoved ? 'Restore this field' : 'Mark this field as removed'}
+        >
+          {fieldState?.isRemoved ? <UndoIcon /> : <RemoveFileIcon />}
+          <span>{fieldState?.isRemoved ? 'Restore' : 'Remove'}</span>
+        </button>
+        <button type="button" className="ghost danger" onClick={onDelete}>
+          Delete
+        </button>
+      </div>
+    );
+  }
+
+  function handleSelectValidationIssue(issue: ValidationIssue) {
+    if (!edited) return;
+
+    const eventMatch = issue.path.match(/^events\.(\d+)/);
+    if (eventMatch) {
+      const targetEvent = edited.events[Number(eventMatch[1])];
+      if (targetEvent) {
+        setSelectedEventId(targetEvent.id);
+      }
+    }
+
+    setPendingValidationFocusPath(issue.path);
+  }
+
   async function loadEventOptions(query = '') {
     setEnumQuery(query);
     setEventOptionsLoading(true);
@@ -1468,16 +2647,110 @@ export function App() {
     return true;
   }
 
+  async function handleWorkbookUpload(action: PendingUploadAction, file: File) {
+    if (action === 'import') {
+      await handleImport(file);
+      return;
+    }
+    await handleFormatFirst(file);
+  }
+
+  function beginWorkbookUpload(action: PendingUploadAction, file: File) {
+    if (isValidUploadFileName(file.name)) {
+      void handleWorkbookUpload(action, file);
+      return;
+    }
+
+    const stateCode =
+      extractUploadStateSeed(file.name) ||
+      extractUploadStateSeed(edited?.fileName ?? '') ||
+      extractUploadStateSeed(original?.fileName ?? '') ||
+      extractUploadStateSeed(stagedFormattedModel?.fileName ?? '');
+    const versionText = extractVersionFromFileName(file.name);
+    const dateText = extractDateFromFileName(file.name);
+    const suggestions = buildUploadFileNameSuggestions(stateCode, versionText, dateText);
+    setPendingUpload({
+      action,
+      originalFile: file,
+      stateCode,
+      versionText,
+      dateText,
+      customName: suggestions[0] ?? '',
+      suggestedNames: suggestions,
+      error: '',
+    });
+  }
+
+  async function handleSavePendingUploadName() {
+    if (!pendingUpload) return;
+    const nextName = pendingUpload.customName.trim();
+    if (!isValidUploadFileName(nextName)) {
+      setPendingUpload((current) =>
+        current
+          ? {
+              ...current,
+              error: 'Use uploadDoc_<state>_<version>_<date>.xlsx. Example: uploadDoc_PA_1.4_26-05-2026.xlsx',
+            }
+          : current,
+      );
+      return;
+    }
+
+    const renamedFile = new File([pendingUpload.originalFile], nextName, {
+      type: pendingUpload.originalFile.type,
+      lastModified: pendingUpload.originalFile.lastModified,
+    });
+    const action = pendingUpload.action;
+    setPendingUpload(null);
+    await handleWorkbookUpload(action, renamedFile);
+  }
+
+  function handlePendingUploadStateCodeChange(value: string) {
+    setPendingUpload((current) => {
+      if (!current) return current;
+      const nextStateCode = sanitiseStateTokenInput(value);
+      const nextSuggestions = buildUploadFileNameSuggestions(
+        nextStateCode,
+        current.versionText,
+        current.dateText,
+      );
+      const shouldReplaceCustomName =
+        !current.customName.trim() || current.suggestedNames.includes(current.customName);
+      return {
+        ...current,
+        stateCode: nextStateCode,
+        suggestedNames: nextSuggestions,
+        customName: shouldReplaceCustomName
+          ? nextSuggestions[0] ?? current.customName
+          : current.customName,
+        error: '',
+      };
+    });
+  }
+
+  function handlePendingUploadSuggestedNameSelect(name: string) {
+    setPendingUpload((current) =>
+      current ? { ...current, customName: name, error: '' } : current,
+    );
+  }
+
+  function handlePendingUploadCustomNameChange(value: string) {
+    setPendingUpload((current) =>
+      current ? { ...current, customName: value, error: '' } : current,
+    );
+  }
+
   async function handleImport(file: File) {
     setBusy(true);
     setStatus(`Importing ${file.name}...`);
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const model = await fetchJson<QleWorkbookModel>('/api/import-workbook', {
+      const importedModel = await fetchJson<QleWorkbookModel>('/api/import-workbook', {
         method: 'POST',
         body: formData,
       });
+      const model = preserveImportedWorkbookHighlights(importedModel);
       setOriginal(model);
       setDownloadedModel(cloneModel(model));
       setEdited(cloneModel(model));
@@ -1525,11 +2798,12 @@ export function App() {
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       );
       downloadBlob(blob, payload.fileName);
-      setStagedFormattedModel(payload.model);
-      setOriginal(cloneModel(payload.model));
-      setDownloadedModel(cloneModel(payload.model));
-      setEdited(cloneModel(payload.model));
-      setSelectedEventId(payload.model.events[0]?.id ?? null);
+      const formattedModel = preserveImportedWorkbookHighlights(payload.model);
+      setStagedFormattedModel(formattedModel);
+      setOriginal(cloneModel(formattedModel));
+      setDownloadedModel(cloneModel(formattedModel));
+      setEdited(cloneModel(formattedModel));
+      setSelectedEventId(formattedModel.events[0]?.id ?? null);
       setDiff(null);
       setJiraDraft(null);
       setJiraForm(null);
@@ -1548,8 +2822,8 @@ export function App() {
       setExportVersion(1);
       setHistory([]);
       applyValidationState(
-        payload.model,
-        `Formatted ${file.name}, saved ${payload.fileName} to ${payload.savedPath}, and loaded ${payload.model.events.length} events into the dashboard.`,
+        formattedModel,
+        `Formatted ${file.name}, saved ${payload.fileName} to ${payload.savedPath}, and loaded ${formattedModel.events.length} events into the dashboard.`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Formatting failed.';
@@ -1561,10 +2835,11 @@ export function App() {
 
   function loadStagedFormattedModel() {
     if (!stagedFormattedModel) return;
-    setOriginal(cloneModel(stagedFormattedModel));
-    setDownloadedModel(cloneModel(stagedFormattedModel));
-    setEdited(cloneModel(stagedFormattedModel));
-    setSelectedEventId(stagedFormattedModel.events[0]?.id ?? null);
+    const model = preserveImportedWorkbookHighlights(cloneModel(stagedFormattedModel));
+    setOriginal(cloneModel(model));
+    setDownloadedModel(cloneModel(model));
+    setEdited(cloneModel(model));
+    setSelectedEventId(model.events[0]?.id ?? null);
     setDiff(null);
     setJiraDraft(null);
     setJiraForm(null);
@@ -1579,12 +2854,12 @@ export function App() {
     setReviewSummary([]);
     setReviewDownloadUrl('');
     setReviewDownloadName('');
-    setReviewJiraTitle('');
-    setExportVersion(1);
-    setHistory([]);
-    applyValidationState(
-      stagedFormattedModel,
-      `Loaded formatted workbook for editing: ${stagedFormattedModel.fileName}`,
+      setReviewJiraTitle('');
+      setExportVersion(1);
+      setHistory([]);
+      applyValidationState(
+      model,
+      `Loaded formatted workbook for editing: ${model.fileName}`,
     );
   }
 
@@ -1663,12 +2938,12 @@ export function App() {
     if (!snapshot) return;
     const issues = validateWorkbookModel(snapshot);
     setValidationIssues(issues);
-    if (issues.length > 0) {
-      setStatus('Download blocked. Complete all required fields first.');
-      return;
-    }
     setBusy(true);
-    setStatus('Saving updates and generating the formatted workbook...');
+    setStatus(
+      issues.length > 0
+        ? 'Saving updates and generating the formatted workbook with validation warnings still present...'
+        : 'Saving updates and generating the formatted workbook...',
+    );
     try {
       const response = await fetch('/api/export-workbook', {
         method: 'POST',
@@ -1724,6 +2999,39 @@ export function App() {
     setExportVersion(1);
     setHistory([]);
     setStatus('Cleared the current draft. Upload a workbook to get started.');
+  }
+
+  function handleRebaseWorkbook() {
+    if (!edited) return;
+
+    const rebased = clearWorkbookHighlights(edited);
+    setOriginal(cloneModel(rebased));
+    setDownloadedModel(cloneModel(rebased));
+    setEdited(cloneModel(rebased));
+    setSelectedEventId(rebased.events.find((event) => event.id === selectedEventId)?.id ?? rebased.events[0]?.id ?? null);
+    setDiff(null);
+    setJiraDraft(null);
+    setJiraForm(null);
+    setMissingJiraForm(null);
+    setDbCheck(null);
+    setJiraResults([]);
+    setReadyResult(null);
+    setReadyJiraKey('');
+    setJiraCreateStatus('');
+    setJiraCreateError('');
+    setReviewModalOpen(false);
+    setReviewSummary([]);
+    setReviewDownloadUrl('');
+    setReviewDownloadName('');
+    setReviewJiraTitle('');
+    setExportVersion(1);
+    setHistory([]);
+    setLastAutosavedAt(null);
+    setRebaseModalOpen(false);
+    applyValidationState(
+      rebased,
+      'Current workbook is now the base document. Existing new highlights were cleared and future edits will be tracked from this version.',
+    );
   }
 
   function handleDeveloperWorkbookSelect(file: File | null) {
@@ -1963,7 +3271,7 @@ export function App() {
     if (!original || !edited) return;
     const fallbackUrl = 'https://jira.getinsured.com/secure/CreateIssue!default.jspa';
     const pendingWindow = window.open(fallbackUrl, '_blank');
-    const description = buildReviewDescription(reviewSummary, diff, edited, original);
+    const description = buildReviewDescription(reviewSummary);
     setBusy(true);
     try {
       const payload = await fetchJson<{ url: string }>('/api/jira/create-link', {
@@ -2027,11 +3335,24 @@ export function App() {
     setStatus(successMessage);
   }
 
+  function handleDeveloperJiraKeyChange(value: string) {
+    setDeveloperJiraKey(value.toUpperCase());
+    setDeveloperStageResult(null);
+    setDeveloperApprovalCaptured(false);
+  }
+
   async function handleReviewChanges() {
     if (!original || !edited) return;
     const snapshot = buildCurrentWorkbookSnapshot();
     if (!snapshot) return;
+    const issues = validateWorkbookModel(snapshot);
+    setValidationIssues(issues);
     setBusy(true);
+    setStatus(
+      issues.length > 0
+        ? 'Preparing review with validation warnings still present...'
+        : 'Preparing review changes...',
+    );
     try {
       const [summary, exportResponse] = await Promise.all([
         fetchJson<DiffSummary>('/api/diff', {
@@ -2068,6 +3389,16 @@ export function App() {
       setReviewDownloadUrl(url);
       setReviewDownloadName(match?.[1] ?? snapshot.fileName);
       setReviewModalOpen(true);
+      setStatus(
+        issues.length > 0
+          ? 'Review is ready. Validation warnings are still present, but you can continue reviewing and download the latest workbook.'
+          : 'Review is ready.',
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to prepare review changes.';
+      setStatus(`Review changes failed. ${message}`);
+      throw error;
     } finally {
       setBusy(false);
     }
@@ -2164,791 +3495,107 @@ export function App() {
 
   return (
     <div className={`app-shell theme-${theme} ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`}>
-      <aside className="sidebar-shell">
-        <nav className="nav-rail" aria-label="Flow navigation">
-          <button
-            type="button"
-            className="rail-badge rail-toggle"
-            title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-            onClick={() => setSidebarExpanded((current) => !current)}
-          >
-            {sidebarExpanded ? 'QLE Document' : 'Q'}
-          </button>
-          <button
-            type="button"
-            className={`rail-nav ${activeFlow === 'pm' ? 'active' : ''}`}
-            onClick={() => setActiveFlow('pm')}
-            title="PM Dashboard"
-          >
-            <ClipboardIcon />
-            {sidebarExpanded ? <span>PM Dashboard</span> : null}
-          </button>
-          <button
-            type="button"
-            className={`rail-nav ${activeFlow === 'developer' ? 'active' : ''}`}
-            onClick={() => setActiveFlow('developer')}
-            title="Developer Dashboard"
-          >
-            <CodeIcon />
-            {sidebarExpanded ? <span>Developer Dashboard</span> : null}
-          </button>
-          {edited ? (
-            <button
-              type="button"
-              className="rail-nav rail-download"
-              disabled={busy || !hasUnsavedChanges}
-              onClick={() => void handleSaveWorkbook()}
-              title="Download the latest formatted workbook"
-            >
-              <DownloadIcon />
-              {sidebarExpanded ? <span>Download</span> : null}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="rail-nav rail-theme"
-            onClick={() => setTheme((current) => (current === 'classic' ? 'soft' : 'classic'))}
-            title="Switch theme"
-          >
-            <PlusIcon />
-            {sidebarExpanded ? <span>{theme === 'classic' ? 'Soft Theme' : 'Classic Theme'}</span> : null}
-          </button>
-        </nav>
-      </aside>
+      <SidebarRail
+        activeFlow={activeFlow}
+        sidebarExpanded={sidebarExpanded}
+        hasWorkbook={Boolean(edited)}
+        busy={busy}
+        hasUnsavedChanges={hasUnsavedChanges}
+        theme={theme}
+        onToggleSidebar={() => setSidebarExpanded((current) => !current)}
+        onSelectFlow={(flow) => setActiveFlow(flow)}
+        onDownload={() => void handleSaveWorkbook()}
+        onToggleTheme={() => setTheme((current) => (current === 'classic' ? 'soft' : 'classic'))}
+      />
 
       <main className="main-pane">
         <div className="status-bar">{status}</div>
         {activeFlow === 'developer' ? (
-          <section className="editor">
-            <section className={`pm-workspace developer-workspace ${developerWorkspaceCollapsed ? 'collapsed' : ''}`}>
-              <div className="pm-workspace-header">
-                <div className="flow-hero">
-                  <div className="sidebar-brow">Developer Dashboard</div>
-                  <h2>Implementation Intake</h2>
-                  <p>Start from the Jira and workbook, then hand the request into the QLE skill workflow for code changes and review.</p>
-                </div>
-                <button
-                  className="icon-only-button developer-collapse-button"
-                  type="button"
-                  title={developerWorkspaceCollapsed ? 'Expand Developer Dashboard' : 'Collapse Developer Dashboard'}
-                  onClick={() => setDeveloperWorkspaceCollapsed((current) => !current)}
-                >
-                  {developerWorkspaceCollapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                </button>
-              </div>
-
-              {!developerWorkspaceCollapsed ? (
-                <>
-                  <div className="pm-intake-grid">
-                    <div className="panel developer-panel">
-                      <div className="section-label">Request Intake</div>
-                      <label className="upload-card intake-card">
-                        <span className="intake-title">Jira request</span>
-                        <span className="intake-copy">Enter the Jira key the developer will use as the source of truth for implementation.</span>
-                        <input
-                          type="text"
-                          placeholder="HIX-224362"
-                          value={developerJiraKey}
-                          onChange={(event) => {
-                            setDeveloperJiraKey(event.target.value.toUpperCase());
-                            setDeveloperStageResult(null);
-                            setDeveloperApprovalCaptured(false);
-                          }}
-                        />
-                      </label>
-                    </div>
-                    <div className="panel developer-panel">
-                      <div className="section-label">Request Intake</div>
-                      <label className="upload-card intake-card">
-                        <span className="intake-title">Workbook for the skill</span>
-                        <span className="intake-copy">Upload the reviewed workbook here as a fallback or override for the Jira attachment.</span>
-                        <input
-                          type="file"
-                          accept=".xlsx"
-                          onChange={(event) => handleDeveloperWorkbookSelect(event.target.files?.[0] ?? null)}
-                        />
-                        {developerWorkbookName ? <span className="field-hint">Attached: {developerWorkbookName}</span> : null}
-                        {!developerWorkbookName ? (
-                          <span className="field-hint developer-warning">
-                            Browser refreshes clear file uploads. Reattach the workbook before running Developer Dashboard.
-                          </span>
-                        ) : null}
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="pm-action-strip developer-action-strip">
-                    <div className="pm-action-copy">
-                      <div className="section-label">Next Step</div>
-                      <h3>Run Implementation Flow</h3>
-                      <p>Use Jira plus the reviewed workbook to start the implementation workflow, then verify both the generated diff and the isolated preview before commit and push.</p>
-                    </div>
-                    <div className="pm-action-group">
-                      <button
-                        className="action-emphasis"
-                        type="button"
-                        disabled={busy || !developerJiraKey.trim() || !developerWorkbookFile}
-                        title="Start Developer Dashboard with Cursor CLI and the configured Jira MCP server"
-                        onClick={() => void handleRunDeveloperFlow()}
-                      >
-                        {developerPendingAction === 'run' ? <SpinnerIcon /> : null}
-                        <span>Run Implementation Flow</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="workflow-grid">
-                    <div className="panel developer-panel">
-                      <div className="panel-header">
-                        <h3>Planned actions</h3>
-                      </div>
-                      <ul className="plain-list">
-                        <li>Read the Jira request and attachment.</li>
-                        <li>Create a working branch for the implementation.</li>
-                        <li>Run the formatted QLE skill with the workbook context.</li>
-                        <li>Start a preview server from the isolated worktree for visual verification.</li>
-                        <li>Open changes for user verification before commit and push.</li>
-                      </ul>
-                    </div>
-
-                    <div className="panel developer-panel">
-                      <div className="panel-header">
-                        <h3>Skill handoff</h3>
-                      </div>
-                      <div className="developer-meta-list">
-                        <div>
-                          <strong>Skill</strong>
-                          <span>/Users/ganesan_h/Documents/workfolder/iex/.cursor/skills/qle/add-enums-formatted</span>
-                        </div>
-                        <div>
-                          <strong>Branch preview</strong>
-                          <span>{developerJiraKey ? `cursor/${developerJiraKey.toLowerCase()}-qle-update` : 'cursor/jira-key-qle-update'}</span>
-                        </div>
-                        <div>
-                          <strong>Workbook source</strong>
-                          <span>{developerWorkbookName || 'Use Jira attachment or upload a workbook above.'}</span>
-                        </div>
-                        <div>
-                          <strong>Preview target</strong>
-                          <span>{developerRunStatus?.previewUrl || 'http://127.0.0.1:8888/mp/documents after the preview step completes.'}</span>
-                        </div>
-                        <div>
-                          <strong>Preview state</strong>
-                          <span>{developerStageResult?.previewStateCode || 'Infer from Jira when the run starts.'}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="panel developer-panel">
-                      <div className="panel-header">
-                        <h3>Execution Status</h3>
-                      </div>
-                      <div className="developer-status-list">
-                        {developerExecutionItems.map((item) => (
-                          <div key={item.label} className="developer-status-item">
-                            <div>
-                              <strong>{item.label}</strong>
-                              {'key' in item &&
-                              item.key === 'approvalAndPush' &&
-                              developerRunStatus?.branchBrowseUrl &&
-                              item.detail.includes(developerRunStatus.branchName) ? (
-                                <span>
-                                  {item.detail.split(developerRunStatus.branchName)[0]}
-                                  <a
-                                    href={developerRunStatus.branchBrowseUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    {developerRunStatus.branchName}
-                                  </a>
-                                  {item.detail.split(developerRunStatus.branchName).slice(1).join(developerRunStatus.branchName)}
-                                </span>
-                              ) : 'key' in item &&
-                                item.key === 'previewServer' &&
-                                developerRunStatus?.previewUrl &&
-                                item.detail.includes(developerRunStatus.previewUrl) ? (
-                                <span>
-                                  {item.detail.split(developerRunStatus.previewUrl)[0]}
-                                  <a
-                                    href={developerRunStatus.previewUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    {developerRunStatus.previewUrl}
-                                  </a>
-                                  {item.detail.split(developerRunStatus.previewUrl).slice(1).join(developerRunStatus.previewUrl)}
-                                </span>
-                              ) : (
-                                <span>{item.detail}</span>
-                              )}
-                            </div>
-                            <span className={`developer-status-badge state-${item.state.toLowerCase().replace(/\s+/g, '-')}`}>
-                              {item.state}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="panel developer-panel">
-                      <div className="panel-header">
-                        <h3>Approval</h3>
-                      </div>
-                      <p className="developer-approval-copy">
-                        After the skill run produces changed files and a diff summary, use this checkpoint to confirm the implementation before commit and push.
-                      </p>
-                      <div className="pm-action-group">
-                        <button
-                          className="ghost action-secondary"
-                          type="button"
-                          disabled={
-                            busy ||
-                            !developerRunId ||
-                            developerRunStatus?.overallState !== 'awaiting_approval'
-                          }
-                          onClick={() => void handleApproveDeveloperFlow()}
-                        >
-                          {developerPendingAction === 'approve' ? <SpinnerIcon /> : null}
-                          <span>Approve and push</span>
-                        </button>
-                        <button
-                          className="modal-link-button"
-                          type="button"
-                          disabled={
-                            busy ||
-                            !developerRunId ||
-                            (developerRunStatus?.overallState !== 'completed' &&
-                              developerRunStatus?.overallState !== 'failed')
-                          }
-                          onClick={() => void handleCreateDeveloperPr()}
-                        >
-                          {developerPendingAction === 'createPr' ? <SpinnerIcon /> : null}
-                          <span>Create PR</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {developerRunStatus &&
-                  (developerRunStatus.changedFiles.length > 0 ||
-                    developerRunStatus.diffSummary ||
-                    developerRunStatus.changeRequestSummary ||
-                    developerRunStatus.detailedDiff) ? (
-                    <div className="panel developer-panel">
-                      <div className="panel-header">
-                        <h3>Review changes</h3>
-                        <button
-                          className="icon-only-button developer-collapse-button"
-                          type="button"
-                          title={developerReviewChangesCollapsed ? 'Expand Review changes' : 'Collapse Review changes'}
-                          onClick={() => setDeveloperReviewChangesCollapsed((current) => !current)}
-                        >
-                          {developerReviewChangesCollapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                        </button>
-                      </div>
-                      {!developerReviewChangesCollapsed && developerRunStatus.changeRequestSummary ? (
-                        <div className="developer-diff-block">
-                          <strong>Change request</strong>
-                          <pre>{developerRunStatus.changeRequestSummary}</pre>
-                        </div>
-                      ) : null}
-                      {!developerReviewChangesCollapsed && developerRunStatus.previewUrl ? (
-                        <div className="developer-meta-list">
-                          <div>
-                            <strong>Preview URL</strong>
-                            <span>
-                              <a href={developerRunStatus.previewUrl} target="_blank" rel="noreferrer">
-                                {developerRunStatus.previewUrl}
-                              </a>
-                            </span>
-                          </div>
-                        </div>
-                      ) : null}
-                      {!developerReviewChangesCollapsed && developerRunStatus.changedFiles.length > 0 ? (
-                        <div className="developer-meta-list">
-                          <div>
-                            <strong>Changed files</strong>
-                            <span>{developerRunStatus.changedFiles.join(', ')}</span>
-                          </div>
-                        </div>
-                      ) : null}
-                      {!developerReviewChangesCollapsed && developerRunStatus.diffSummary ? (
-                        <div className="developer-diff-block">
-                          <strong>Diff summary</strong>
-                          <pre>{developerRunStatus.diffSummary}</pre>
-                        </div>
-                      ) : null}
-                      {!developerReviewChangesCollapsed && developerRunStatus.detailedDiff ? (
-                        <div className="developer-diff-block">
-                          <strong>What changed</strong>
-                          <pre>{developerRunStatus.detailedDiff}</pre>
-                        </div>
-                      ) : null}
-                      {developerRunStatus.uiCodeReviewSummary ? (
-                        <div className="developer-diff-block">
-                          <div className="panel-header">
-                            <strong>UI code review</strong>
-                            <div className="panel-header-actions">
-                              <button
-                                className="ghost icon-only-button"
-                                type="button"
-                                title="Copy UI code review"
-                                onClick={() =>
-                                  void copyText(
-                                    developerRunStatus.uiCodeReviewSummary ?? '',
-                                    'UI code review copied.',
-                                  )
-                                }
-                              >
-                                <CopyIcon />
-                              </button>
-                              <button
-                                className="icon-only-button developer-collapse-button"
-                                type="button"
-                                title={developerUiCodeReviewCollapsed ? 'Expand UI code review' : 'Collapse UI code review'}
-                                onClick={() => setDeveloperUiCodeReviewCollapsed((current) => !current)}
-                              >
-                                {developerUiCodeReviewCollapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                              </button>
-                            </div>
-                          </div>
-                          {!developerUiCodeReviewCollapsed ? <pre>{developerRunStatus.uiCodeReviewSummary}</pre> : null}
-                        </div>
-                      ) : null}
-                      {developerRunStatus.prSummaryText ? (
-                        <div className="developer-diff-block">
-                          <div className="panel-header">
-                            <strong>PR summary</strong>
-                            <div className="panel-header-actions">
-                              <button
-                                className="ghost icon-only-button"
-                                type="button"
-                                title="Copy PR summary"
-                                onClick={() =>
-                                  void copyText(
-                                    developerRunStatus.prSummaryText ?? '',
-                                    'PR summary copied.',
-                                  )
-                                }
-                              >
-                                <CopyIcon />
-                              </button>
-                              <button
-                                className="icon-only-button developer-collapse-button"
-                                type="button"
-                                title={developerPrSummaryCollapsed ? 'Expand PR summary' : 'Collapse PR summary'}
-                                onClick={() => setDeveloperPrSummaryCollapsed((current) => !current)}
-                              >
-                                {developerPrSummaryCollapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                              </button>
-                            </div>
-                          </div>
-                          {!developerPrSummaryCollapsed ? <pre>{developerRunStatus.prSummaryText}</pre> : null}
-                        </div>
-                      ) : null}
-                      {developerRunStatus.prTitle ? (
-                        <div className="developer-meta-list">
-                          <div>
-                            <strong>PR title</strong>
-                            <span>{developerRunStatus.prTitle}</span>
-                          </div>
-                          <div>
-                            <button
-                              className="ghost icon-button"
-                              type="button"
-                              onClick={() =>
-                                void copyText(
-                                  developerRunStatus.prTitle ?? '',
-                                  'PR title copied.',
-                                )
-                              }
-                            >
-                              <CopyIcon />
-                              <span>Copy PR title</span>
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-                      {developerRunStatus.prCreateUrl ? (
-                        <div className="developer-diff-block">
-                          <div className="panel-header">
-                            <strong>Go to PR</strong>
-                            <div className="panel-header-actions">
-                              <a
-                                className="modal-link-button"
-                                href={developerRunStatus.prCreateUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                Go to PR
-                              </a>
-                              <button
-                                className="ghost icon-button"
-                                type="button"
-                                onClick={() =>
-                                  void copyText(
-                                    developerRunStatus.prCreateUrl ?? '',
-                                    'Create PR link copied.',
-                                  )
-                                }
-                              >
-                                <CopyIcon />
-                                <span>Copy PR link</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {developerStageResult ? (
-                    <div className="panel developer-panel">
-                      <div className="panel-header">
-                        <h3>Staged handoff</h3>
-                      </div>
-                      <div className="developer-meta-list">
-                        <div>
-                          <strong>Bundle folder</strong>
-                          <span>{developerStageResult.bundleDir}</span>
-                        </div>
-                        <div>
-                          <strong>Handoff file</strong>
-                          <span>{developerStageResult.handoffFile}</span>
-                        </div>
-                        <div>
-                          <strong>Workbook copy</strong>
-                          <span>{developerStageResult.workbookPath}</span>
-                        </div>
-                        <div>
-                          <strong>Preview state</strong>
-                          <span>{developerStageResult.previewStateCode || 'Unknown'}</span>
-                        </div>
-                        <div>
-                          <strong>Repo worktree</strong>
-                          <span>{developerStageResult.worktreePath}</span>
-                        </div>
-                        <div>
-                          <strong>Launch guide</strong>
-                          <span>{developerStageResult.launchGuide}</span>
-                        </div>
-                        <div>
-                          <strong>Cursor output log</strong>
-                          <span>{developerStageResult.cursorOutputLog}</span>
-                        </div>
-                        <div>
-                          <strong>Cursor error log</strong>
-                          <span>{developerStageResult.cursorErrorLog}</span>
-                        </div>
-                        <div>
-                          <strong>Preview output log</strong>
-                          <span>{developerStageResult.previewOutputLog}</span>
-                        </div>
-                        <div>
-                          <strong>Preview error log</strong>
-                          <span>{developerStageResult.previewErrorLog}</span>
-                        </div>
-                        <div>
-                          <strong>UI review output log</strong>
-                          <span>{developerStageResult.uiCodeReviewOutputLog}</span>
-                        </div>
-                        <div>
-                          <strong>UI review error log</strong>
-                          <span>{developerStageResult.uiCodeReviewErrorLog}</span>
-                        </div>
-                        <div>
-                          <strong>PR summary output log</strong>
-                          <span>{developerStageResult.prSummaryOutputLog}</span>
-                        </div>
-                        <div>
-                          <strong>PR summary error log</strong>
-                          <span>{developerStageResult.prSummaryErrorLog}</span>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                </>
-              ) : null}
-            </section>
-
-          </section>
+          <DeveloperDashboard
+            busy={busy}
+            collapsed={developerWorkspaceCollapsed}
+            developerJiraKey={developerJiraKey}
+            developerWorkbookName={developerWorkbookName}
+            developerWorkbookFile={developerWorkbookFile}
+            developerPendingAction={developerPendingAction}
+            developerStageResult={developerStageResult}
+            developerRunId={developerRunId}
+            developerRunStatus={developerRunStatus}
+            developerExecutionItems={developerExecutionItems}
+            developerReviewChangesCollapsed={developerReviewChangesCollapsed}
+            developerUiCodeReviewCollapsed={developerUiCodeReviewCollapsed}
+            developerPrSummaryCollapsed={developerPrSummaryCollapsed}
+            onToggleCollapsed={() => setDeveloperWorkspaceCollapsed((current) => !current)}
+            onDeveloperJiraKeyChange={handleDeveloperJiraKeyChange}
+            onDeveloperWorkbookSelect={handleDeveloperWorkbookSelect}
+            onRunImplementationFlow={() => void handleRunDeveloperFlow()}
+            onApproveAndPush={() => void handleApproveDeveloperFlow()}
+            onCreatePr={() => void handleCreateDeveloperPr()}
+            onToggleReviewChanges={() => setDeveloperReviewChangesCollapsed((current) => !current)}
+            onToggleUiCodeReview={() => setDeveloperUiCodeReviewCollapsed((current) => !current)}
+            onTogglePrSummary={() => setDeveloperPrSummaryCollapsed((current) => !current)}
+            onCopyText={copyText}
+          />
         ) : !edited || !selectedEvent ? (
-          <section className="empty-state">
-            <div className="pm-workspace-header">
-              <div className="flow-hero">
-                <div className="sidebar-brow">PM Dashboard</div>
-                <h2>Workbook Intake</h2>
-                <p>Choose the right starting point below. Both options open in the central workspace so PMs can stay focused on the flow.</p>
-                {dbConnectionSummary ? (
-                  <p className="pm-db-connection">Connected to DB: {dbConnectionSummary}</p>
-                ) : null}
-              </div>
-              <div className="pm-header-actions">
-                <button
-                  className="ghost icon-only-button"
-                  type="button"
-                  title={dbSettingsTooltip}
-                  onClick={() => setDbConfigModalOpen(true)}
-                >
-                  <GearIcon />
-                </button>
-              </div>
-            </div>
-            <div className="workflow-grid">
-              <label className="upload-card">
-                <span>Open formatted workbook for editing</span>
-                <input
-                  type="file"
-                  accept=".xlsx"
-                  disabled={busy}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void handleImport(file);
-                  }}
-                />
-              </label>
-              <label className="upload-card">
-                <span>Format unformatted workbook</span>
-                <input
-                  type="file"
-                  accept=".xlsx"
-                  disabled={busy}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void handleFormatFirst(file);
-                  }}
-                />
-              </label>
-            </div>
-            {stagedFormattedModel ? (
-              <div className="panel">
-                <h3>Formatted Review Ready</h3>
-                <p>
-                  Downloaded a formatted workbook for <strong>{stagedFormattedModel.fileName}</strong>.
-                  Review it first, then open that formatted version in the editor.
-                </p>
-                <button disabled={busy} onClick={loadStagedFormattedModel}>
-                  Open formatted workbook in editor
-                </button>
-              </div>
-            ) : null}
-          </section>
+          <PmEmptyState
+            busy={busy}
+            dbConnectionSummary={dbConnectionSummary}
+            dbSettingsTooltip={dbSettingsTooltip}
+            stagedFormattedModel={stagedFormattedModel}
+            onOpenDbSettings={() => setDbConfigModalOpen(true)}
+            onUploadFormatted={(file) => beginWorkbookUpload('import', file)}
+            onUploadUnformatted={(file) => beginWorkbookUpload('format', file)}
+            onOpenFormattedWorkbook={loadStagedFormattedModel}
+          />
         ) : (
           <section className="editor">
-            <section className={`pm-workspace ${pmWorkspaceCollapsed ? 'collapsed' : ''}`}>
-              <div className="pm-workspace-header">
-                <div className="flow-hero">
-                  <div className="sidebar-brow">PM Dashboard</div>
-                  <h2>Workbook Intake</h2>
-                  <p>Start from a formatted workbook or convert an unformatted one, then use the action tray below to review and export changes.</p>
-                  {dbConnectionSummary ? (
-                    <p className="pm-db-connection">Connected to DB: {dbConnectionSummary}</p>
-                  ) : null}
-                </div>
-                <div className="pm-header-actions">
-                  <button
-                    className="ghost icon-only-button"
-                    type="button"
-                    title={dbSettingsTooltip}
-                    onClick={() => setDbConfigModalOpen(true)}
-                  >
-                    <GearIcon />
-                  </button>
-                  <button
-                    className="ghost icon-only-button"
-                    type="button"
-                    title={pmWorkspaceCollapsed ? 'Expand PM Dashboard' : 'Collapse PM Dashboard'}
-                    onClick={() => setPmWorkspaceCollapsed((current) => !current)}
-                  >
-                    {pmWorkspaceCollapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                  </button>
-                </div>
-              </div>
+            <PmWorkspaceIntro
+              busy={busy}
+              collapsed={pmWorkspaceCollapsed}
+              dbConnectionSummary={dbConnectionSummary}
+              dbSettingsTooltip={dbSettingsTooltip}
+              events={edited.events}
+              selectedEventId={selectedEventId}
+              eventLabelById={eventLabelById}
+              onOpenDbSettings={() => setDbConfigModalOpen(true)}
+              onToggleCollapsed={() => setPmWorkspaceCollapsed((current) => !current)}
+              onUploadFormatted={(file) => beginWorkbookUpload('import', file)}
+              onUploadUnformatted={(file) => beginWorkbookUpload('format', file)}
+              onAddGroup={() =>
+                mutateEdited((draft) => {
+                  const event = createEmptyEvent(draft.events.length + 1);
+                  draft.events.push(event);
+                  setSelectedEventId(event.id);
+                })
+              }
+              onSelectEvent={setSelectedEventId}
+            />
 
-              {!pmWorkspaceCollapsed ? (
-                <>
-                  <div className="pm-intake-grid">
-                    <label className="upload-card intake-card">
-                      <span className="intake-title">Open formatted workbook</span>
-                      <span className="intake-copy">Continue editing a workbook that is already in the formatted dashboard structure.</span>
-                      <input
-                        type="file"
-                        accept=".xlsx"
-                        disabled={busy}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          if (file) void handleImport(file);
-                        }}
-                      />
-                    </label>
-                    <label className="upload-card intake-card">
-                      <span className="intake-title">Format unformatted workbook</span>
-                      <span className="intake-copy">Convert the source workbook first, review it, then reopen the formatted result for editing.</span>
-                      <input
-                        type="file"
-                        accept=".xlsx"
-                        disabled={busy}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          if (file) void handleFormatFirst(file);
-                        }}
-                      />
-                    </label>
-                  </div>
+            <WorkflowInsights
+              diff={diff}
+              validationIssues={validationIssues}
+              dbCheck={dbCheck}
+              onSelectValidationIssue={handleSelectValidationIssue}
+            />
 
-                  <div className="panel events-panel">
-                    <div className="panel-header">
-                      <h3>Event Groups</h3>
-                      <button
-                        className="ghost"
-                        disabled={busy}
-                        title="Add a new event after the existing events"
-                        onClick={() =>
-                          mutateEdited((draft) => {
-                            const event = createEmptyEvent(draft.events.length + 1);
-                            draft.events.push(event);
-                            setSelectedEventId(event.id);
-                          })
-                        }
-                      >
-                        Add Group
-                      </button>
-                    </div>
-                    <div className="event-list event-list-readable">
-                      {edited.events.map((event) => (
-                        <button
-                          key={event.id}
-                          className={[
-                            'event-pill',
-                            event.id === selectedEventId ? 'active' : '',
-                            event.isRemoved ? 'removed-row' : '',
-                          ].filter(Boolean).join(' ')}
-                          title={`Open Event ${event.eventNumber}${event.isRemoved ? ' (removed)' : ''}`}
-                          onClick={() => setSelectedEventId(event.id)}
-                        >
-                          Group {event.eventNumber}{event.isRemoved ? ' - Removed' : ''}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+            <SaveBanner
+              hasUnsavedChanges={hasUnsavedChanges}
+              busy={busy}
+              lastAutosavedAt={lastAutosavedAt}
+              onDownload={() => void handleSaveWorkbook()}
+            />
 
-                </>
-              ) : null}
-            </section>
-
-            {(diff || validationIssues.length > 0 || dbCheck) ? (
-              <div className="workflow-grid">
-                {diff ? (
-                  <div className="panel">
-                    <h3>Diff Summary</h3>
-                    <p>{diff.counts.changes} changes detected.</p>
-                    <ul className="plain-list">
-                      {diff.entries.slice(0, 20).map((entry, index) => (
-                        <li key={`${entry.path}-${index}`}>
-                          [{entry.kind}] {entry.entity} {entry.path}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {validationIssues.length > 0 ? (
-                  <div className="panel required-fields-panel">
-                    <div className="required-fields-header">
-                      <div className="section-label">Validation</div>
-                      <h3>Required Fields</h3>
-                      <p>Complete these before downloading, bundling, or creating Jira.</p>
-                    </div>
-                    <ul className="plain-list required-fields-list">
-                      {validationIssues.slice(0, 12).map((issue) => (
-                        <li key={issue.path}>{issue.message}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {dbCheck ? (
-                  <div className="panel">
-                    <h3>DB Event Check</h3>
-                    {!dbCheck.configured ? <p>Database lookup is not configured yet.</p> : null}
-                    {dbCheck.errors.length > 0 ? (
-                      <ul className="plain-list">
-                        {dbCheck.errors.map((error) => (
-                          <li key={error}>{error}</li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    {dbCheck.missing.length > 0 ? (
-                      <>
-                        <p>{dbCheck.missing.length} event names are missing from `sep_enrollment_events`.</p>
-                        <ul className="plain-list">
-                          {dbCheck.missing.map((item) => (
-                            <li key={`${item.eventNumber}-${item.eventName}`}>
-                              Event {item.eventNumber}: {item.eventName} {'->'} {item.englishLabel}
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    ) : dbCheck.configured && dbCheck.errors.length === 0 ? (
-                      <p>All event names in this workbook were found in the database.</p>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            <div className="save-banner">
-              <div>
-                <strong>{hasUnsavedChanges ? 'Workbook download needed' : 'Workbook is up to date'}</strong>
-                <p>
-                  {hasUnsavedChanges
-                    ? 'Your latest edits are saved in the dashboard draft. Download when you want the refreshed workbook.'
-                    : 'The downloaded workbook matches the latest edits in the dashboard.'}
-                </p>
-                {lastAutosavedAt ? <p>Last draft autosave: {lastAutosavedAt}.</p> : null}
-              </div>
-              <button
-                className="primary-save"
-                disabled={busy || !hasUnsavedChanges}
-                title="Download the latest formatted workbook with your edits"
-                onClick={() => void handleSaveWorkbook()}
-              >
-                <DownloadIcon />
-                <span>Download</span>
-              </button>
-            </div>
-
-            <div className="pm-action-strip">
-              <div className="pm-action-copy">
-                <div className="section-label">Next Step</div>
-                <h3>Review before handoff</h3>
-                <p>
-                  {hasUnsavedChanges
-                    ? 'Download the workbook above, then review changes before handing the update off.'
-                    : 'Review the current changes or clear the draft before moving on.'}
-                </p>
-                {lastAutosavedAt ? <span>Last draft autosave: {lastAutosavedAt}</span> : null}
-              </div>
-              <div className="pm-action-group">
-                <button
-                  className="action-emphasis"
-                  disabled={busy}
-                  title="Compare your current edits against the imported workbook"
-                  onClick={() => void handleReviewChanges()}
-                >
-                  Review Changes
-                </button>
-                <button
-                  className="ghost action-secondary"
-                  disabled={busy}
-                  title="Clear the current local draft and start over"
-                  onClick={clearDraft}
-                >
-                  Clear Draft
-                </button>
-              </div>
-            </div>
+            <PmActionStrip
+              busy={busy}
+              hasUnsavedChanges={hasUnsavedChanges}
+              lastAutosavedAt={lastAutosavedAt}
+              onReviewChanges={() => void handleReviewChanges()}
+              onUseAsBaseDocument={() => setRebaseModalOpen(true)}
+              onClearDraft={clearDraft}
+            />
 
             <div className="editor-header">
-              <h2>Group {selectedEvent.eventNumber}</h2>
+              <h2>{eventLabelById.get(selectedEvent.id) ?? `Event ${selectedEvent.eventNumber}`}</h2>
               <div className="action-row">
                 <button
                   className="ghost danger icon-button"
@@ -2960,7 +3607,7 @@ export function App() {
                     })
                   }
                 >
-                  <TrashIcon />
+                  <RemoveFileIcon />
                   <span>{selectedEvent.isRemoved ? 'Event Removed' : 'Remove Event'}</span>
                 </button>
                 <button
@@ -2979,7 +3626,7 @@ export function App() {
               <div className="panel-header">
                 <h3>Enum Rows</h3>
                 <button
-                  className="ghost icon-button"
+                  className="ghost icon-only-button"
                   title="Add another enum row under this event"
                   onClick={() =>
                     mutateEdited((draft) => {
@@ -2989,7 +3636,6 @@ export function App() {
                   }
                 >
                   <PlusIcon />
-                  <span>Add Enum</span>
                 </button>
               </div>
               <table className="data-table">
@@ -2998,145 +3644,277 @@ export function App() {
                     <th>Enum</th>
                     <th>English</th>
                     <th>Spanish</th>
-                    <th className="table-col-toggle">New</th>
-                    <th className="table-col-actions"></th>
+                    <th className="table-col-row-actions">Row</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {selectedEvent.enumRows.map((row) => (
-                    <tr key={row.id} className={row.isRemoved ? 'removed-row' : ''}>
-                      <td>
-                        <div className="autocomplete-field">
-                          <input
-                            value={row.enum}
-                            placeholder="Start typing an event name"
-                            onBlur={() => {
-                              noteAutosave();
-                              window.setTimeout(() => setActiveEnumRowId((current) => (current === row.id ? null : current)), 120);
-                            }}
-                            onFocus={() => {
-                              setActiveEnumRowId(row.id);
-                              setEnumQuery(row.enum);
-                              void loadEventOptions(row.enum);
-                            }}
-                            onChange={(event) =>
-                              mutateEdited((draft) => {
-                                const target = draft.events
-                                  .find((item) => item.id === selectedEvent.id)
-                                ?.enumRows.find((item) => item.id === row.id);
-                                if (target) target.enum = event.target.value;
-                              })
-                            }
-                            onInput={(event) => {
-                              const value = (event.target as HTMLInputElement).value;
-                              setEnumQuery(value);
-                              void loadEventOptions(value);
-                            }}
-                          />
-                          {activeEnumRowId === row.id && filteredEventOptions.length > 0 ? (
-                            <div className="autocomplete-menu">
-                              <div className="autocomplete-status">
-                                {eventOptionsLoading
-                                  ? 'Loading event names...'
-                                  : `${filteredEventOptions.length} suggestion${filteredEventOptions.length === 1 ? '' : 's'}`}
-                              </div>
-                              <ul className="autocomplete-list">
-                                {filteredEventOptions.map((option) => (
-                                  <li key={`${option.eventName}-${option.eventLabel}`}>
-                                    <button
-                                      type="button"
-                                      className="autocomplete-option"
-                                      onMouseDown={(event) => {
-                                        event.preventDefault();
-                                        mutateEdited((draft) => {
-                                          const target = draft.events
-                                            .find((item) => item.id === selectedEvent.id)
-                                            ?.enumRows.find((item) => item.id === row.id);
-                                          if (target) target.enum = option.eventName;
-                                        });
-                                        setEnumQuery(option.eventName);
-                                        setActiveEnumRowId(null);
-                                      }}
-                                    >
-                                      <strong>{option.eventName}</strong>
-                                      <span>{option.eventLabel}</span>
-                                    </button>
-                                  </li>
-                                ))}
-                              </ul>
+                  {selectedEvent.enumRows.map((row, rowIndex) => {
+                    const rowBasePath = `${selectedEventPathPrefix}.enumRows.${rowIndex}`;
+
+                    return (
+                      <tr key={row.id} className={row.isRemoved ? 'removed-row' : ''}>
+                        <td>
+                          <div className="table-managed-field">
+                            <div className="autocomplete-field">
+                              <input
+                                {...buildManagedFieldProps(row, 'enum', `${rowBasePath}.enum`)}
+                                value={row.enum}
+                                placeholder="Start typing an event name"
+                                onBlur={() => {
+                                  noteAutosave();
+                                  window.setTimeout(() => setActiveEnumRowId((current) => (current === row.id ? null : current)), 120);
+                                }}
+                                onFocus={() => {
+                                  setActiveEnumRowId(row.id);
+                                  setEnumQuery(row.enum);
+                                  void loadEventOptions(row.enum);
+                                }}
+                                onChange={(event) =>
+                                  mutateEdited((draft) => {
+                                    const target = draft.events
+                                      .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                    if (target) target.enum = event.target.value;
+                                  })
+                                }
+                                onInput={(event) => {
+                                  const value = (event.target as HTMLInputElement).value;
+                                  setEnumQuery(value);
+                                  void loadEventOptions(value);
+                                }}
+                              />
+                              {activeEnumRowId === row.id && filteredEventOptions.length > 0 ? (
+                                <div className="autocomplete-menu">
+                                  <div className="autocomplete-status">
+                                    {eventOptionsLoading
+                                      ? 'Loading event names...'
+                                      : `${filteredEventOptions.length} suggestion${filteredEventOptions.length === 1 ? '' : 's'}`}
+                                  </div>
+                                  <ul className="autocomplete-list">
+                                    {filteredEventOptions.map((option) => (
+                                      <li key={`${option.eventName}-${option.eventLabel}`}>
+                                        <button
+                                          type="button"
+                                          className="autocomplete-option"
+                                          onMouseDown={(event) => {
+                                            event.preventDefault();
+                                            mutateEdited((draft) => {
+                                              const target = draft.events
+                                                .find((item) => item.id === selectedEvent.id)
+                                                ?.enumRows.find((item) => item.id === row.id);
+                                              if (target) target.enum = option.eventName;
+                                            });
+                                            setEnumQuery(option.eventName);
+                                            setActiveEnumRowId(null);
+                                          }}
+                                        >
+                                          <strong>{option.eventName}</strong>
+                                          <span>{option.eventLabel}</span>
+                                        </button>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : activeEnumRowId === row.id ? (
+                                <div className="autocomplete-menu">
+                                  <div className="autocomplete-status">
+                                    {eventOptionsLoading ? 'Loading event names...' : 'No matching event names.'}
+                                  </div>
+                                </div>
+                              ) : null}
                             </div>
-                          ) : activeEnumRowId === row.id ? (
-                            <div className="autocomplete-menu">
-                              <div className="autocomplete-status">
-                                {eventOptionsLoading ? 'Loading event names...' : 'No matching event names.'}
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      </td>
-                      <td>
-                        <input
-                          value={row.en}
-                          onBlur={noteAutosave}
-                          onChange={(event) =>
-                            mutateEdited((draft) => {
-                              const target = draft.events
-                                .find((item) => item.id === selectedEvent.id)
-                                ?.enumRows.find((item) => item.id === row.id);
-                              if (target) target.en = event.target.value;
-                            })
-                          }
-                        />
-                      </td>
-                      <td>
-                        <input
-                          value={row.es}
-                          onBlur={noteAutosave}
-                          onChange={(event) =>
-                            mutateEdited((draft) => {
-                              const target = draft.events
-                                .find((item) => item.id === selectedEvent.id)
-                                ?.enumRows.find((item) => item.id === row.id);
-                              if (target) target.es = event.target.value;
-                            })
-                          }
-                        />
-                      </td>
-                      <td className="table-cell-toggle">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(row.isNew)}
-                          onBlur={noteAutosave}
-                          onChange={(event) =>
-                            mutateEdited((draft) => {
-                              const target = draft.events
-                                .find((item) => item.id === selectedEvent.id)
-                                ?.enumRows.find((item) => item.id === row.id);
-                              if (target) {
-                                target.manualIsNew = event.target.checked;
-                                target.isNew = event.target.checked;
+                            {renderFieldActionRow(
+                              row,
+                              'enum',
+                              (checked) =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  const state = ensureFieldState(target, 'enum');
+                                  state.isRemoved = false;
+                                  state.manualIsNew = checked;
+                                  state.isNew = checked;
+                                }),
+                              () =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  const state = ensureFieldState(target, 'enum');
+                                  state.isRemoved = !state.isRemoved;
+                                  if (state.isRemoved) {
+                                    state.manualIsNew = null;
+                                    state.isNew = false;
+                                  }
+                                }),
+                              () =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  target.enum = '';
+                                  applyFieldDelete(target, 'enum');
+                                }),
+                              { iconOnly: true, revealOnHover: true, scopeLabel: 'enum field' },
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="table-managed-field">
+                            <input
+                              {...buildManagedFieldProps(row, 'en', `${rowBasePath}.en`)}
+                              value={row.en}
+                              onBlur={noteAutosave}
+                              onChange={(event) =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (target) target.en = event.target.value;
+                                })
                               }
-                            })
-                          }
-                        />
-                      </td>
-                      <td className="table-cell-actions">
-                        <button
-                          className="ghost danger icon-only-button"
-                          title="Delete this enum row"
-                          onClick={() =>
-                            mutateEdited((draft) => {
-                              const event = draft.events.find((item) => item.id === selectedEvent.id);
-                              const target = event?.enumRows.find((item) => item.id === row.id);
-                              if (target) target.isRemoved = true;
-                            })
-                          }
-                        >
-                          <TrashIcon />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                            />
+                            {renderFieldActionRow(
+                              row,
+                              'en',
+                              (checked) =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  const state = ensureFieldState(target, 'en');
+                                  state.isRemoved = false;
+                                  state.manualIsNew = checked;
+                                  state.isNew = checked;
+                                }),
+                              () =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  const state = ensureFieldState(target, 'en');
+                                  state.isRemoved = !state.isRemoved;
+                                  if (state.isRemoved) {
+                                    state.manualIsNew = null;
+                                    state.isNew = false;
+                                  }
+                                }),
+                              () =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  target.en = '';
+                                  applyFieldDelete(target, 'en');
+                                }),
+                              { iconOnly: true, revealOnHover: true, scopeLabel: 'English label' },
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="table-managed-field">
+                            <input
+                              {...buildManagedFieldProps(row, 'es', `${rowBasePath}.es`)}
+                              value={row.es}
+                              onBlur={noteAutosave}
+                              onChange={(event) =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (target) target.es = event.target.value;
+                                })
+                              }
+                            />
+                            {renderFieldActionRow(
+                              row,
+                              'es',
+                              (checked) =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  const state = ensureFieldState(target, 'es');
+                                  state.isRemoved = false;
+                                  state.manualIsNew = checked;
+                                  state.isNew = checked;
+                                }),
+                              () =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  const state = ensureFieldState(target, 'es');
+                                  state.isRemoved = !state.isRemoved;
+                                  if (state.isRemoved) {
+                                    state.manualIsNew = null;
+                                    state.isNew = false;
+                                  }
+                                }),
+                              () =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (!target) return;
+                                  target.es = '';
+                                  applyFieldDelete(target, 'es');
+                                }),
+                              { iconOnly: true, revealOnHover: true, scopeLabel: 'Spanish label' },
+                            )}
+                          </div>
+                        </td>
+                        <td className="table-cell-row-actions">
+                          <div className="enum-row-actions">
+                            <button
+                              type="button"
+                              className={`ghost icon-only-button field-action-icon new-action-icon${row.isNew ? ' is-active' : ''}`}
+                              title={row.isNew ? 'Unmark this row as new' : 'Mark this row as new'}
+                              aria-label={row.isNew ? 'Unmark this row as new' : 'Mark this row as new'}
+                              aria-pressed={Boolean(row.isNew)}
+                              onClick={() =>
+                                mutateEdited((draft) => {
+                                  const target = draft.events
+                                    .find((item) => item.id === selectedEvent.id)
+                                    ?.enumRows.find((item) => item.id === row.id);
+                                  if (target) {
+                                    const nextChecked = !Boolean(target.isNew);
+                                    target.manualIsNew = nextChecked;
+                                    target.isNew = nextChecked;
+                                  }
+                                })
+                              }
+                            >
+                              <NewBadgeIcon />
+                            </button>
+                            <button
+                              className="ghost danger icon-only-button"
+                              title="Delete this enum row"
+                              aria-label="Delete this enum row"
+                              onClick={() =>
+                                mutateEdited((draft) => {
+                                  const event = draft.events.find((item) => item.id === selectedEvent.id);
+                                  const target = event?.enumRows.find((item) => item.id === row.id);
+                                  if (target) target.isRemoved = true;
+                                })
+                              }
+                            >
+                              <TrashIcon />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               <p className="field-hint">{eventOptionsHelp || 'Start typing to search existing event names.'}</p>
@@ -3147,7 +3925,39 @@ export function App() {
               <div className="two-up">
                 <label>
                   English
+                  {renderFieldActionRow(
+                    selectedEvent,
+                    'instructionsEn',
+                    (checked) =>
+                      mutateEdited((draft) => {
+                        const target = draft.events.find((item) => item.id === selectedEvent.id);
+                        if (!target) return;
+                        const state = ensureFieldState(target, 'instructionsEn');
+                        state.isRemoved = false;
+                        state.manualIsNew = checked;
+                        state.isNew = checked;
+                      }),
+                    () =>
+                      mutateEdited((draft) => {
+                        const target = draft.events.find((item) => item.id === selectedEvent.id);
+                        if (!target) return;
+                        const state = ensureFieldState(target, 'instructionsEn');
+                        state.isRemoved = !state.isRemoved;
+                        if (state.isRemoved) {
+                          state.manualIsNew = null;
+                          state.isNew = false;
+                        }
+                      }),
+                    () =>
+                      mutateEdited((draft) => {
+                        const target = draft.events.find((item) => item.id === selectedEvent.id);
+                        if (!target) return;
+                        target.instructionsEn = '';
+                        applyFieldDelete(target, 'instructionsEn');
+                      }),
+                  )}
                   <textarea
+                    {...buildManagedFieldProps(selectedEvent, 'instructionsEn', `${selectedEventPathPrefix}.instructionsEn`)}
                     rows={4}
                     value={selectedEvent.instructionsEn}
                     onBlur={noteAutosave}
@@ -3161,7 +3971,39 @@ export function App() {
                 </label>
                 <label>
                   Spanish
+                  {renderFieldActionRow(
+                    selectedEvent,
+                    'instructionsEs',
+                    (checked) =>
+                      mutateEdited((draft) => {
+                        const target = draft.events.find((item) => item.id === selectedEvent.id);
+                        if (!target) return;
+                        const state = ensureFieldState(target, 'instructionsEs');
+                        state.isRemoved = false;
+                        state.manualIsNew = checked;
+                        state.isNew = checked;
+                      }),
+                    () =>
+                      mutateEdited((draft) => {
+                        const target = draft.events.find((item) => item.id === selectedEvent.id);
+                        if (!target) return;
+                        const state = ensureFieldState(target, 'instructionsEs');
+                        state.isRemoved = !state.isRemoved;
+                        if (state.isRemoved) {
+                          state.manualIsNew = null;
+                          state.isNew = false;
+                        }
+                      }),
+                    () =>
+                      mutateEdited((draft) => {
+                        const target = draft.events.find((item) => item.id === selectedEvent.id);
+                        if (!target) return;
+                        target.instructionsEs = '';
+                        applyFieldDelete(target, 'instructionsEs');
+                      }),
+                  )}
                   <textarea
+                    {...buildManagedFieldProps(selectedEvent, 'instructionsEs', `${selectedEventPathPrefix}.instructionsEs`)}
                     rows={4}
                     value={selectedEvent.instructionsEs}
                     onBlur={noteAutosave}
@@ -3195,625 +4037,639 @@ export function App() {
               </div>
 
               <div className="category-stack">
-                {selectedEvent.categories.map((category) => (
-                  <div key={category.id} className={category.isRemoved ? 'category-card removed-row' : 'category-card'}>
-                    <div className="panel-header">
-                      <strong>{category.enum || 'New category'}{category.isRemoved ? ' - Removed' : ''}</strong>
-                      <button
-                        className="ghost danger icon-only-button"
-                        title="Mark this category and its documents as removed"
-                        onClick={() =>
-                          mutateEdited((draft) => {
-                            const event = draft.events.find((item) => item.id === selectedEvent.id);
-                            const target = event?.categories.find((item) => item.id === category.id);
-                            if (target) markCategoryRemoved(target);
-                          })
-                        }
-                      >
-                        <TrashIcon />
-                      </button>
-                    </div>
+                {selectedEvent.categories.map((category, categoryIndex) => {
+                  const categoryBasePath = `${selectedEventPathPrefix}.categories.${categoryIndex}`;
 
-                    <div className="two-up">
-                      <label>
-                        Category Enum
-                        <input
-                          value={category.enum}
-                          onBlur={noteAutosave}
-                          onChange={(event) =>
+                  return (
+                    <div key={category.id} className={category.isRemoved ? 'category-card removed-row' : 'category-card'}>
+                      <div className="panel-header">
+                        <strong>{category.enum || 'New category'}{category.isRemoved ? ' - Removed' : ''}</strong>
+                        <button
+                          className="ghost danger icon-only-button"
+                          title="Mark this category and its documents as removed"
+                          onClick={() =>
                             mutateEdited((draft) => {
-                              const target = draft.events
-                                .find((item) => item.id === selectedEvent.id)
-                                ?.categories.find((item) => item.id === category.id);
-                              if (target) target.enum = event.target.value;
+                              const event = draft.events.find((item) => item.id === selectedEvent.id);
+                              const target = event?.categories.find((item) => item.id === category.id);
+                              if (target) markCategoryRemoved(target);
                             })
                           }
-                        />
-                      </label>
-                      <label>
-                        Validation Rule
-                        <textarea
-                          rows={3}
-                          value={category.validation}
-                          onBlur={noteAutosave}
-                          onChange={(event) =>
-                            mutateEdited((draft) => {
-                              const target = draft.events
-                                .find((item) => item.id === selectedEvent.id)
-                                ?.categories.find((item) => item.id === category.id);
-                              if (target) target.validation = event.target.value;
-                            })
-                          }
-                        />
-                      </label>
-                    </div>
+                        >
+                          <RemoveFileIcon />
+                        </button>
+                      </div>
 
-                    <div className="two-up">
-                      <label>
-                        English
-                        <input
-                          value={category.en}
-                          onBlur={noteAutosave}
-                          onChange={(event) =>
-                            mutateEdited((draft) => {
-                              const target = draft.events
-                                .find((item) => item.id === selectedEvent.id)
-                                ?.categories.find((item) => item.id === category.id);
-                              if (target) target.en = event.target.value;
-                            })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Spanish
-                        <input
-                          value={category.es}
-                          onBlur={noteAutosave}
-                          onChange={(event) =>
-                            mutateEdited((draft) => {
-                              const target = draft.events
-                                .find((item) => item.id === selectedEvent.id)
-                                ?.categories.find((item) => item.id === category.id);
-                              if (target) target.es = event.target.value;
-                            })
-                          }
-                        />
-                      </label>
-                    </div>
-
-                    <div className="panel-header nested">
-                      <h4>Documents</h4>
-                      <button
-                        className="ghost icon-button"
-                        disabled={Boolean(category.isRemoved)}
-                        title={
-                          category.isRemoved
-                            ? 'Cannot add documents to a removed category'
-                            : 'Add a document under this category'
-                        }
-                        onClick={() =>
-                          mutateEdited((draft) => {
-                            const target = draft.events
-                              .find((item) => item.id === selectedEvent.id)
-                              ?.categories.find((item) => item.id === category.id);
-                            target?.documents.push(createEmptyDocument((target.documents.length || 0) + 1));
-                          })
-                        }
-                      >
-                        <PlusIcon />
-                        <span>Add Document</span>
-                      </button>
-                    </div>
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th className="table-col-index">#</th>
-                          <th>Enum</th>
-                          <th>English</th>
-                          <th>Spanish</th>
-                          <th className="table-col-toggle">New</th>
-                          <th className="table-col-actions"></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {category.documents.map((document, documentIndex) => (
-                          <tr key={document.id} className={document.isRemoved ? 'removed-row' : ''}>
-                            <td className="table-cell-index">{documentIndex + 1}</td>
-                            <td>
-                              <input
-                                value={document.enum}
-                                onBlur={noteAutosave}
-                                onChange={(event) =>
-                                  mutateEdited((draft) => {
-                                    const target = draft.events
-                                      .find((item) => item.id === selectedEvent.id)
-                                      ?.categories.find((item) => item.id === category.id)
-                                      ?.documents.find((item) => item.id === document.id);
-                                    if (target) target.enum = event.target.value;
-                                  })
+                      <div className="category-field-stack">
+                        <label>
+                          Category Enum
+                          {renderFieldActionRow(
+                            category,
+                            'enum',
+                            (checked) =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                const state = ensureFieldState(target, 'enum');
+                                state.isRemoved = false;
+                                state.manualIsNew = checked;
+                                state.isNew = checked;
+                              }),
+                            () =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                const state = ensureFieldState(target, 'enum');
+                                state.isRemoved = !state.isRemoved;
+                                if (state.isRemoved) {
+                                  state.manualIsNew = null;
+                                  state.isNew = false;
                                 }
-                              />
-                            </td>
-                            <td>
-                              <input
-                                value={document.en}
-                                onBlur={noteAutosave}
-                                onChange={(event) =>
-                                  mutateEdited((draft) => {
-                                    const target = draft.events
-                                      .find((item) => item.id === selectedEvent.id)
-                                      ?.categories.find((item) => item.id === category.id)
-                                      ?.documents.find((item) => item.id === document.id);
-                                    if (target) target.en = event.target.value;
-                                  })
+                              }),
+                            () =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                target.enum = '';
+                                applyFieldDelete(target, 'enum');
+                              }),
+                          )}
+                          <input
+                            {...buildManagedFieldProps(category, 'enum', `${categoryBasePath}.enum`)}
+                            value={category.enum}
+                            onBlur={noteAutosave}
+                            onChange={(event) =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (target) target.enum = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <div className="two-up">
+                        <label>
+                          English
+                          {renderFieldActionRow(
+                            category,
+                            'en',
+                            (checked) =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                const state = ensureFieldState(target, 'en');
+                                state.isRemoved = false;
+                                state.manualIsNew = checked;
+                                state.isNew = checked;
+                              }),
+                            () =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                const state = ensureFieldState(target, 'en');
+                                state.isRemoved = !state.isRemoved;
+                                if (state.isRemoved) {
+                                  state.manualIsNew = null;
+                                  state.isNew = false;
                                 }
-                              />
-                            </td>
-                            <td>
-                              <input
-                                value={document.es}
-                                onBlur={noteAutosave}
-                                onChange={(event) =>
-                                  mutateEdited((draft) => {
-                                    const target = draft.events
-                                      .find((item) => item.id === selectedEvent.id)
-                                      ?.categories.find((item) => item.id === category.id)
-                                      ?.documents.find((item) => item.id === document.id);
-                                    if (target) target.es = event.target.value;
-                                  })
+                              }),
+                            () =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                target.en = '';
+                                applyFieldDelete(target, 'en');
+                              }),
+                          )}
+                          <input
+                            {...buildManagedFieldProps(category, 'en', `${categoryBasePath}.en`)}
+                            value={category.en}
+                            onBlur={noteAutosave}
+                            onChange={(event) =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (target) target.en = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Spanish
+                          {renderFieldActionRow(
+                            category,
+                            'es',
+                            (checked) =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                const state = ensureFieldState(target, 'es');
+                                state.isRemoved = false;
+                                state.manualIsNew = checked;
+                                state.isNew = checked;
+                              }),
+                            () =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                const state = ensureFieldState(target, 'es');
+                                state.isRemoved = !state.isRemoved;
+                                if (state.isRemoved) {
+                                  state.manualIsNew = null;
+                                  state.isNew = false;
                                 }
-                              />
-                            </td>
-                            <td className="table-cell-toggle">
-                              <input
-                                type="checkbox"
-                                checked={Boolean(document.isNew)}
-                                onBlur={noteAutosave}
-                                onChange={(event) =>
+                              }),
+                            () =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                target.es = '';
+                                applyFieldDelete(target, 'es');
+                              }),
+                          )}
+                          <input
+                            {...buildManagedFieldProps(category, 'es', `${categoryBasePath}.es`)}
+                            value={category.es}
+                            onBlur={noteAutosave}
+                            onChange={(event) =>
+                              mutateEdited((draft) => {
+                                const target = draft.events
+                                  .find((item) => item.id === selectedEvent.id)
+                                  ?.categories.find((item) => item.id === category.id);
+                                if (target) target.es = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        </div>
+                        <div className="category-validation-section">
+                          <div className="category-validation-heading">
+                            <span className="category-validation-title">Validation Rules</span>
+                            <span className="category-validation-note">
+                              Category-level rule values used for document requirements.
+                            </span>
+                          </div>
+                          <div
+                            className={`validation-rule-list${
+                              validationIssueByPath.get(`${categoryBasePath}.validation`) ? ' field-error' : ''
+                            }${getFieldState(category, 'validation')?.isRemoved ? ' field-removed' : ''}${
+                              getFieldState(category, 'validation')?.isNew &&
+                              !getFieldState(category, 'validation')?.isRemoved
+                                ? ' field-new'
+                                : ''
+                            }`}
+                            data-field-path={`${categoryBasePath}.validation`}
+                            aria-invalid={
+                              validationIssueByPath.get(`${categoryBasePath}.validation`) ? true : undefined
+                            }
+                            title={validationIssueByPath.get(`${categoryBasePath}.validation`)?.message}
+                          >
+                            {(category.validationItems ?? parseValidationItemsFromText(category.validation)).map(
+                              (item, itemIndex) => {
+                                const itemBasePath = `${categoryBasePath}.validationItems.${itemIndex}`;
+                                const keyPath = `${itemBasePath}.key`;
+                                const valuePath = `${itemBasePath}.value`;
+                              const keyFieldProps = buildManagedFieldProps(item, 'key', keyPath);
+                              const valueFieldProps = buildManagedFieldProps(item, 'value', valuePath);
+                              const validationKeyLocked = isFixedValidationRuleKey(item.key);
+                              const itemRowClass = `validation-rule-item${
+                                validationItemHasNewState(item) ? ' is-new' : ''
+                              }${validationItemHasRemovedState(item) ? ' is-removed' : ''}${
+                                validationKeyLocked ? ' is-fixed' : ''
+                              }`;
+                                const mutateValidationItem = (
+                                  mutator: (validationItem: QleValidationItem, target: QleCategory) => void,
+                                ) =>
                                   mutateEdited((draft) => {
                                     const target = draft.events
-                                      .find((item) => item.id === selectedEvent.id)
-                                      ?.categories.find((item) => item.id === category.id)
-                                      ?.documents.find((item) => item.id === document.id);
-                                    if (target) {
-                                      target.manualIsNew = event.target.checked;
-                                      target.isNew = event.target.checked;
-                                    }
-                                  })
-                                }
-                              />
-                            </td>
-                            <td className="table-cell-actions">
-                              <button
-                                className="ghost danger icon-only-button"
-                                title="Delete this document row"
-                                onClick={() =>
-                                  mutateEdited((draft) => {
-                                    const target = draft.events
-                                      .find((item) => item.id === selectedEvent.id)
-                                      ?.categories.find((item) => item.id === category.id);
+                                      .find((entry) => entry.id === selectedEvent.id)
+                                      ?.categories.find((entry) => entry.id === category.id);
                                     if (!target) return;
-                                    const documentTarget = target.documents.find(
-                                      (item) => item.id === document.id,
-                                    );
-                                    if (documentTarget) documentTarget.isRemoved = true;
-                                  })
-                                }
-                              >
-                                <TrashIcon />
-                              </button>
-                            </td>
+                                    const items = ensureCategoryValidationItems(target);
+                                    const validationItem = items.find((entry) => entry.id === item.id);
+                                    if (!validationItem) return;
+                                    mutator(validationItem, target);
+                                    syncCategoryValidation(target);
+                                  });
+
+                                return (
+                                  <div key={item.id} className={itemRowClass}>
+                                    <div className="validation-rule-field">
+                                      <input
+                                        {...keyFieldProps}
+                                        className={[keyFieldProps.className, 'validation-rule-key'].filter(Boolean).join(' ')}
+                                        value={item.key}
+                                        placeholder="Rule key"
+                                        readOnly={validationKeyLocked}
+                                        title={validationKeyLocked ? 'Validation rule key is fixed' : keyFieldProps.title}
+                                        onBlur={noteAutosave}
+                                        onChange={(event) =>
+                                          mutateValidationItem((validationItem) => {
+                                            validationItem.key = event.target.value;
+                                          })
+                                        }
+                                      />
+                                    </div>
+                                    <div className="validation-rule-field">
+                                      <input
+                                        {...valueFieldProps}
+                                        className={[valueFieldProps.className, 'validation-rule-value'].filter(Boolean).join(' ')}
+                                        value={item.value}
+                                        placeholder="Rule value"
+                                        onBlur={noteAutosave}
+                                        onChange={(event) =>
+                                          mutateValidationItem((validationItem) => {
+                                            validationItem.value = event.target.value;
+                                          })
+                                        }
+                                      />
+                                    </div>
+                                  </div>
+                                );
+                              },
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="panel-header nested">
+                        <h4>Documents</h4>
+                        <button
+                          className="ghost icon-button"
+                          disabled={Boolean(category.isRemoved)}
+                          title={
+                            category.isRemoved
+                              ? 'Cannot add documents to a removed category'
+                              : 'Add a document under this category'
+                          }
+                          onClick={() =>
+                            mutateEdited((draft) => {
+                              const target = draft.events
+                                .find((item) => item.id === selectedEvent.id)
+                                ?.categories.find((item) => item.id === category.id);
+                              target?.documents.push(createEmptyDocument((target.documents.length || 0) + 1));
+                            })
+                          }
+                        >
+                          <PlusIcon />
+                          <span>Add Document</span>
+                        </button>
+                      </div>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th className="table-col-index">#</th>
+                            <th>Enum</th>
+                            <th>English</th>
+                            <th>Spanish</th>
+                            <th className="table-col-row-actions">Row</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
+                        </thead>
+                        <tbody>
+                          {category.documents.map((document, documentIndex) => {
+                            const documentBasePath = `${categoryBasePath}.documents.${documentIndex}`;
+
+                            return (
+                              <tr key={document.id} className={document.isRemoved ? 'removed-row' : ''}>
+                                <td className="table-cell-index">{documentIndex + 1}</td>
+                                <td>
+                                  <div className="table-managed-field">
+                                    {renderFieldActionRow(
+                                      document,
+                                      'enum',
+                                      (checked) =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          const state = ensureFieldState(target, 'enum');
+                                          state.isRemoved = false;
+                                          state.manualIsNew = checked;
+                                          state.isNew = checked;
+                                        }),
+                                      () =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          const state = ensureFieldState(target, 'enum');
+                                          state.isRemoved = !state.isRemoved;
+                                          if (state.isRemoved) {
+                                            state.manualIsNew = null;
+                                            state.isNew = false;
+                                          }
+                                        }),
+                                      () =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          target.enum = '';
+                                          applyFieldDelete(target, 'enum');
+                                        }),
+                                      { scopeLabel: 'document enum' },
+                                    )}
+                                    <input
+                                      {...buildManagedFieldProps(document, 'enum', `${documentBasePath}.enum`)}
+                                      value={document.enum}
+                                      onBlur={noteAutosave}
+                                      onChange={(event) =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (target) target.enum = event.target.value;
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                </td>
+                                <td>
+                                  <div className="table-managed-field">
+                                    {renderFieldActionRow(
+                                      document,
+                                      'en',
+                                      (checked) =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          const state = ensureFieldState(target, 'en');
+                                          state.isRemoved = false;
+                                          state.manualIsNew = checked;
+                                          state.isNew = checked;
+                                        }),
+                                      () =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          const state = ensureFieldState(target, 'en');
+                                          state.isRemoved = !state.isRemoved;
+                                          if (state.isRemoved) {
+                                            state.manualIsNew = null;
+                                            state.isNew = false;
+                                          }
+                                        }),
+                                      () =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          target.en = '';
+                                          applyFieldDelete(target, 'en');
+                                        }),
+                                      { scopeLabel: 'document English label' },
+                                    )}
+                                    <input
+                                      {...buildManagedFieldProps(document, 'en', `${documentBasePath}.en`)}
+                                      value={document.en}
+                                      onBlur={noteAutosave}
+                                      onChange={(event) =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (target) target.en = event.target.value;
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                </td>
+                                <td>
+                                  <div className="table-managed-field">
+                                    {renderFieldActionRow(
+                                      document,
+                                      'es',
+                                      (checked) =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          const state = ensureFieldState(target, 'es');
+                                          state.isRemoved = false;
+                                          state.manualIsNew = checked;
+                                          state.isNew = checked;
+                                        }),
+                                      () =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          const state = ensureFieldState(target, 'es');
+                                          state.isRemoved = !state.isRemoved;
+                                          if (state.isRemoved) {
+                                            state.manualIsNew = null;
+                                            state.isNew = false;
+                                          }
+                                        }),
+                                      () =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (!target) return;
+                                          target.es = '';
+                                          applyFieldDelete(target, 'es');
+                                        }),
+                                      { scopeLabel: 'document Spanish label' },
+                                    )}
+                                    <input
+                                      {...buildManagedFieldProps(document, 'es', `${documentBasePath}.es`)}
+                                      value={document.es}
+                                      onBlur={noteAutosave}
+                                      onChange={(event) =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (target) target.es = event.target.value;
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                </td>
+                                <td className="table-cell-row-actions">
+                                  <div className="enum-row-actions">
+                                    <button
+                                      type="button"
+                                      className={`ghost icon-only-button field-action-icon new-action-icon${document.isNew ? ' is-active' : ''}`}
+                                      title={document.isNew ? 'Unmark this document row as new' : 'Mark this document row as new'}
+                                      aria-label={document.isNew ? 'Unmark this document row as new' : 'Mark this document row as new'}
+                                      aria-pressed={Boolean(document.isNew)}
+                                      onClick={() =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id)
+                                            ?.documents.find((item) => item.id === document.id);
+                                          if (target) {
+                                            const nextChecked = !Boolean(target.isNew);
+                                            target.manualIsNew = nextChecked;
+                                            target.isNew = nextChecked;
+                                          }
+                                        })
+                                      }
+                                    >
+                                      <NewBadgeIcon />
+                                    </button>
+                                    <button
+                                      className="ghost danger icon-only-button"
+                                      title="Delete this document row"
+                                      aria-label="Delete this document row"
+                                      onClick={() =>
+                                        mutateEdited((draft) => {
+                                          const target = draft.events
+                                            .find((item) => item.id === selectedEvent.id)
+                                            ?.categories.find((item) => item.id === category.id);
+                                          if (!target) return;
+                                          const documentTarget = target.documents.find(
+                                            (item) => item.id === document.id,
+                                          );
+                                          if (documentTarget) documentTarget.isRemoved = true;
+                                        })
+                                      }
+                                    >
+                                      <TrashIcon />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </section>
         )}
       </main>
 
-      {reviewModalOpen ? (
-        <div className="modal-backdrop">
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="panel-header">
-              <h2>Review Changes</h2>
-              <button
-                className="modal-close-button icon-only-button"
-                title="Close review modal"
-                onClick={() => setReviewModalOpen(false)}
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div className="modal-grid">
-              <label className="modal-span">
-                <div className="panel-header">
-                  <span>Jira Title</span>
-                  <button
-                    className="ghost icon-only-button"
-                    type="button"
-                    title="Copy Jira title"
-                    onClick={() =>
-                      void copyText(
-                        reviewJiraTitle.trim() || (edited ? buildReviewJiraTitle(edited.fileName) : ''),
-                        'Copied Jira title.',
-                      )
-                    }
-                  >
-                    <CopyIcon />
-                  </button>
-                </div>
-                <input value={reviewJiraTitle} onChange={(event) => setReviewJiraTitle(event.target.value)} />
-              </label>
-              <div className="modal-span panel modal-subpanel">
-                <div className="panel-header">
-                  <h3>Changes To Implement</h3>
-                  <button
-                    className="ghost icon-only-button"
-                    type="button"
-                    title="Copy changes to implement"
-                    onClick={() =>
-                      void copyText(
-                        buildReviewDescription(reviewSummary, diff, edited, original),
-                        'Copied changes to implement.',
-                      )
-                    }
-                  >
-                    <CopyIcon />
-                  </button>
-                </div>
-                <div className="review-summary-groups">
-                  {reviewSummary.map((group) => (
-                    <div key={group.title} className="review-summary-group">
-                      <p className="detail-heading">{group.title}:</p>
-                      <ul className="plain-list">
-                        {group.items.filter(shouldRenderReviewItem).map((item) => (
-                          <li key={`${group.title}-${item}`} className="review-summary-item">
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="modal-span panel modal-subpanel">
-                <h3>Workbook</h3>
-                {reviewDownloadUrl ? (
-                  <p>
-                    <a href={reviewDownloadUrl} download={reviewDownloadName}>
-                      Download latest workbook: {reviewDownloadName}
-                    </a>
-                  </p>
-                ) : (
-                  <p>The latest workbook download link will appear here.</p>
-                )}
-              </div>
-            </div>
-            {jiraCreateStatus ? (
-              <div className="panel modal-subpanel">
-                <p><strong>Status:</strong> {jiraCreateStatus}</p>
-                {jiraCreateError ? <p><strong>Error:</strong> {jiraCreateError}</p> : null}
-                {jiraResults.length > 0 ? (
-                  <ul className="plain-list">
-                    {jiraResults.map((result) => (
-                      <li key={result.key}>
-                        {result.browseUrl ? (
-                          <a href={result.browseUrl} target="_blank" rel="noreferrer">
-                            {result.key}
-                          </a>
-                        ) : (
-                          result.key
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ) : null}
-            <div className="modal-actions">
-              <button className="ghost" onClick={() => setReviewModalOpen(false)}>
-                Cancel
-              </button>
-              <button className="ghost modal-link-button" disabled={busy} onClick={() => void handleOpenReviewJiraForm()}>
-                Create Jira
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ReviewChangesModal
+        open={reviewModalOpen}
+        busy={busy}
+        reviewJiraTitle={reviewJiraTitle}
+        fallbackJiraTitle={edited ? buildReviewJiraTitle(edited.fileName) : ''}
+        reviewSummary={reviewSummary}
+        reviewDownloadUrl={reviewDownloadUrl}
+        reviewDownloadName={reviewDownloadName}
+        jiraCreateStatus={jiraCreateStatus}
+        jiraCreateError={jiraCreateError}
+        jiraResults={jiraResults}
+        onClose={() => setReviewModalOpen(false)}
+        onReviewJiraTitleChange={setReviewJiraTitle}
+        onCopyJiraTitle={() =>
+          void copyText(
+            reviewJiraTitle.trim() || (edited ? buildReviewJiraTitle(edited.fileName) : ''),
+            'Copied Jira title.',
+          )
+        }
+        onCopyChanges={() =>
+          void copyText(
+            buildReviewDescription(reviewSummary),
+            'Copied changes to implement.',
+          )
+        }
+        onCreateJira={() => void handleOpenReviewJiraForm()}
+        shouldRenderReviewItem={shouldRenderReviewItem}
+      />
 
-      {dbConfigModalOpen ? (
-        <div className="modal-backdrop" onClick={() => setDbConfigModalOpen(false)}>
-          <div className="modal-card db-config-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="panel-header">
-              <h2>PM Database Settings</h2>
-              <button
-                className="modal-close-button icon-only-button"
-                title="Close database settings"
-                onClick={() => setDbConfigModalOpen(false)}
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <p className="modal-note">
-              Configure the database connection used for PM Dashboard validation and event lookups.
-            </p>
-            <div className="modal-grid">
-              <label>
-                Host
-                <input
-                  value={dbConfigForm.host}
-                  onChange={(event) =>
-                    setDbConfigForm((current) => ({ ...current, host: event.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                Port
-                <input
-                  type="number"
-                  min={1}
-                  value={dbConfigForm.port}
-                  onChange={(event) =>
-                    setDbConfigForm((current) => ({
-                      ...current,
-                      port: Number(event.target.value) || 0,
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Database
-                <input
-                  value={dbConfigForm.database}
-                  onChange={(event) =>
-                    setDbConfigForm((current) => ({ ...current, database: event.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                Schema
-                <input
-                  value={dbConfigForm.schema}
-                  onChange={(event) =>
-                    setDbConfigForm((current) => ({ ...current, schema: event.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                User
-                <input
-                  value={dbConfigForm.user}
-                  onChange={(event) =>
-                    setDbConfigForm((current) => ({ ...current, user: event.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  type="password"
-                  value={dbConfigForm.password}
-                  onChange={(event) =>
-                    setDbConfigForm((current) => ({ ...current, password: event.target.value }))
-                  }
-                />
-              </label>
-              <label className="checkbox-row modal-span">
-                <input
-                  type="checkbox"
-                  checked={dbConfigForm.ssl}
-                  onChange={(event) =>
-                    setDbConfigForm((current) => ({ ...current, ssl: event.target.checked }))
-                  }
-                />
-                <span>Use SSL for the connection</span>
-              </label>
-            </div>
-            <div className="modal-actions">
-              <button className="ghost" onClick={() => setDbConfigModalOpen(false)} disabled={dbConfigSaving}>
-                Cancel
-              </button>
-              <button className="primary-save" onClick={() => void handleSaveDbConfig()} disabled={dbConfigSaving}>
-                {dbConfigSaving ? 'Saving...' : 'Save settings'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <RebaseWorkbookModal
+        open={rebaseModalOpen}
+        onClose={() => setRebaseModalOpen(false)}
+        onConfirm={handleRebaseWorkbook}
+      />
 
-      {jiraModalOpen && jiraForm ? (
-        <div className="modal-backdrop" onClick={() => setJiraModalOpen(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="panel-header">
-              <h2>Draft Jira</h2>
-              <button className="ghost" onClick={() => setJiraModalOpen(false)}>
-                Close
-              </button>
-            </div>
+      <RenameWorkbookModal
+        pendingUpload={pendingUpload}
+        onClose={() => setPendingUpload(null)}
+        onStateCodeChange={handlePendingUploadStateCodeChange}
+        onSelectSuggestedName={handlePendingUploadSuggestedNameSelect}
+        onCustomNameChange={handlePendingUploadCustomNameChange}
+        onSave={() => void handleSavePendingUploadName()}
+      />
 
-            <div className="modal-grid">
-              <label>
-                Summary
-                <input
-                  value={jiraForm.summary}
-                  onChange={(event) =>
-                    setJiraForm((current) => (current ? { ...current, summary: event.target.value } : current))
-                  }
-                />
-              </label>
-              <label>
-                Issue Type
-                <input
-                  value={jiraForm.issueType}
-                  onChange={(event) =>
-                    setJiraForm((current) => (current ? { ...current, issueType: event.target.value } : current))
-                  }
-                />
-              </label>
-              <label>
-                Assignee Account ID
-                <input
-                  value={jiraForm.assigneeAccountId}
-                  onChange={(event) =>
-                    setJiraForm((current) =>
-                      current ? { ...current, assigneeAccountId: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Fix Version
-                <input
-                  value={jiraForm.fixVersionName}
-                  onChange={(event) =>
-                    setJiraForm((current) =>
-                      current ? { ...current, fixVersionName: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Labels
-                <input
-                  value={jiraForm.labels}
-                  onChange={(event) =>
-                    setJiraForm((current) => (current ? { ...current, labels: event.target.value } : current))
-                  }
-                />
-              </label>
-              <label className="modal-span">
-                Description
-                <textarea
-                  rows={12}
-                  value={jiraForm.description}
-                  onChange={(event) =>
-                    setJiraForm((current) =>
-                      current ? { ...current, description: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-            </div>
+      <DbConfigModal
+        open={dbConfigModalOpen}
+        form={dbConfigForm}
+        saving={dbConfigSaving}
+        onClose={() => setDbConfigModalOpen(false)}
+        onChange={setDbConfigForm}
+        onSave={() => void handleSaveDbConfig()}
+      />
 
-            {jiraCreateStatus ? (
-              <div className="panel modal-subpanel">
-                <p><strong>Status:</strong> {jiraCreateStatus}</p>
-                {jiraCreateError ? <p><strong>Error:</strong> {jiraCreateError}</p> : null}
-                {jiraResults.length > 0 ? (
-                  <ul className="plain-list">
-                    {jiraResults.map((result) => (
-                      <li key={result.key}>
-                        {result.browseUrl ? (
-                          <a href={result.browseUrl} target="_blank" rel="noreferrer">
-                            {result.key}
-                          </a>
-                        ) : (
-                          result.key
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ) : null}
+      <JiraDraftModal
+        open={jiraModalOpen}
+        busy={busy}
+        jiraForm={jiraForm}
+        missingJiraForm={missingJiraForm}
+        dbCheck={dbCheck}
+        createMissingEventJira={createMissingEventJira}
+        jiraCreateStatus={jiraCreateStatus}
+        jiraCreateError={jiraCreateError}
+        jiraResults={jiraResults}
+        onClose={() => setJiraModalOpen(false)}
+        onJiraFormChange={setJiraForm}
+        onMissingJiraFormChange={setMissingJiraForm}
+        onCreateMissingEventJiraChange={setCreateMissingEventJira}
+        onCreateJira={() => void handleCreateJira()}
+      />
 
-            {dbCheck?.missing.length ? (
-              <div className="panel modal-subpanel">
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={createMissingEventJira}
-                    onChange={(event) => setCreateMissingEventJira(event.target.checked)}
-                  />
-                  <span>Create a separate Jira for missing event names</span>
-                </label>
-                <ul className="plain-list">
-                  {dbCheck.missing.map((item) => (
-                    <li key={`${item.eventNumber}-${item.eventName}`}>
-                      Event {item.eventNumber}: {item.eventName} {'->'} {item.englishLabel}
-                    </li>
-                  ))}
-                </ul>
-                {createMissingEventJira && missingJiraForm ? (
-                  <div className="modal-grid">
-                    <label className="modal-span">
-                      Missing Event Jira Summary
-                      <input
-                        value={missingJiraForm.summary}
-                        onChange={(event) =>
-                          setMissingJiraForm((current) =>
-                            current ? { ...current, summary: event.target.value } : current,
-                          )
-                        }
-                      />
-                    </label>
-                    <label className="modal-span">
-                      Missing Event Jira Description
-                      <textarea
-                        rows={8}
-                        value={missingJiraForm.description}
-                        onChange={(event) =>
-                          setMissingJiraForm((current) =>
-                            current ? { ...current, description: event.target.value } : current,
-                          )
-                        }
-                      />
-                    </label>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            <div className="modal-actions">
-              <button className="ghost" onClick={() => setJiraModalOpen(false)}>
-                Cancel
-              </button>
-              <button className="primary-save" disabled={busy} onClick={() => void handleCreateJira()}>
-                Create Jira
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {readyModalOpen ? (
-        <div className="modal-backdrop" onClick={() => setReadyModalOpen(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="panel-header">
-              <h2>Ready for Engineering</h2>
-              <button className="ghost" onClick={() => setReadyModalOpen(false)}>
-                Close
-              </button>
-            </div>
-            <p>
-              Enter the existing Jira key that should be linked to the coordinator handoff package.
-              This will not update the codebase yet. It creates a bundle with `agent-handoff.json`
-              and `READY_FOR_ENGINEERING.md`.
-            </p>
-            <label>
-              Jira Key
-              <input
-                placeholder="HIX-222050"
-                value={readyJiraKey}
-                onChange={(event) => setReadyJiraKey(event.target.value.toUpperCase())}
-              />
-            </label>
-            <div className="modal-actions">
-              <button className="ghost" onClick={() => setReadyModalOpen(false)}>
-                Cancel
-              </button>
-              <button className="primary-save" disabled={busy} onClick={() => void handleReadyForEngineering()}>
-                Create Handoff Package
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ReadyForEngineeringModal
+        open={readyModalOpen}
+        busy={busy}
+        jiraKey={readyJiraKey}
+        onClose={() => setReadyModalOpen(false)}
+        onJiraKeyChange={setReadyJiraKey}
+        onConfirm={() => void handleReadyForEngineering()}
+      />
     </div>
   );
 }
+type FieldActionRowOptions = {
+  iconOnly?: boolean;
+  revealOnHover?: boolean;
+  scopeLabel?: string;
+};

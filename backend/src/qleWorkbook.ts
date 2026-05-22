@@ -7,8 +7,15 @@ import type {
   QleDocument,
   QleEnumRow,
   QleEvent,
+  QleFieldStateMap,
+  QleValidationItem,
   QleWorkbookModel,
 } from '../../shared/types.js';
+
+type ValidationItemFieldFlags = {
+  key: { isNew?: boolean; isRemoved?: boolean };
+  value: { isNew?: boolean; isRemoved?: boolean };
+};
 
 const READ_XLSX_OPTS = {
   ignoreNodes: [
@@ -96,6 +103,95 @@ function splitDocs(
     es: es[index] ?? es[es.length - 1] ?? '',
     sort: enums.length > 1 ? index + 1 : Number(sortValue ?? index + 1) || index + 1,
   }));
+}
+
+function splitValidationLines(text: string | null): string[] {
+  return text
+    ? normalise(text)
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+    : [];
+}
+
+function serializeValidationItems(items: QleValidationItem[]): string {
+  return items
+    .map((item) => `${item.key.trim()}: ${item.value.trim()}`.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildFieldStates(
+  entries: Record<string, { isNew?: boolean; isRemoved?: boolean }>,
+): QleFieldStateMap {
+  return Object.fromEntries(
+    Object.entries(entries).map(([key, state]) => [
+      key,
+      {
+        isNew: Boolean(state.isNew) && !Boolean(state.isRemoved),
+        manualIsNew: null,
+        isRemoved: Boolean(state.isRemoved),
+      },
+    ]),
+  );
+}
+
+function parseValidationItems(
+  text: string | null,
+  lineNewFlags: boolean[] = [],
+  lineRemovedFlags: boolean[] = [],
+  fieldFlags: ValidationItemFieldFlags[] = [],
+): QleValidationItem[] {
+  return splitValidationLines(text).map((line, index) => {
+    const separatorIndex = line.indexOf(':');
+    const hasSeparator = separatorIndex >= 0;
+    const key = hasSeparator ? line.slice(0, separatorIndex).trim() : line.trim();
+    const value = hasSeparator ? line.slice(separatorIndex + 1).trim() : '';
+    const lineFieldFlags = fieldFlags[index];
+    const keyFlags = lineFieldFlags?.key ?? {
+      isNew: lineNewFlags[index],
+      isRemoved: lineRemovedFlags[index],
+    };
+    const valueFlags = lineFieldFlags?.value ?? {
+      isNew: lineNewFlags[index],
+      isRemoved: lineRemovedFlags[index],
+    };
+    const lineIsRemoved = Boolean(keyFlags.isRemoved) && Boolean(valueFlags.isRemoved);
+    const lineIsNew = !lineIsRemoved && Boolean(keyFlags.isNew) && Boolean(valueFlags.isNew);
+    return {
+      id: randomUUID(),
+      key,
+      value,
+      fieldStates: buildFieldStates({
+        key: keyFlags,
+        value: valueFlags,
+      }),
+      isNew: lineIsNew,
+      manualIsNew: null,
+      isRemoved: lineIsRemoved,
+    };
+  });
+}
+
+function validationItemFieldStyle(
+  item: QleValidationItem,
+  fieldKey: 'key' | 'value',
+): { isNew: boolean; isRemoved: boolean } {
+  const fieldState = item.fieldStates?.[fieldKey];
+  const isRemoved = Boolean(item.isRemoved) || Boolean(fieldState?.isRemoved);
+  const isNew = !isRemoved && (Boolean(item.isNew) || Boolean(fieldState?.isNew));
+  return { isNew, isRemoved };
+}
+
+function validationItemHasNew(item: QleValidationItem): boolean {
+  return validationItemFieldStyle(item, 'key').isNew || validationItemFieldStyle(item, 'value').isNew;
+}
+
+function validationItemHasRemoved(item: QleValidationItem): boolean {
+  return (
+    validationItemFieldStyle(item, 'key').isRemoved ||
+    validationItemFieldStyle(item, 'value').isRemoved
+  );
 }
 
 function buildSplitNewFlags(count: number, rowHasHighlight: boolean): {
@@ -299,11 +395,123 @@ function buildCellLineNewFlags(cell: ExcelJS.Cell): boolean[] {
   return Array.from({ length: splitCount }, () => cellSignalsNew(cell));
 }
 
+function buildCellLineRemovedFlags(cell: ExcelJS.Cell): boolean[] {
+  const pushLine = (flags: boolean[], text: string, isRemoved: boolean) => {
+    if (text.trim()) flags.push(isRemoved);
+  };
+
+  if (
+    typeof cell.value === 'object' &&
+    cell.value !== null &&
+    'richText' in cell.value &&
+    Array.isArray(cell.value.richText)
+  ) {
+    const flags: boolean[] = [];
+    let currentText = '';
+    let currentIsRemoved = false;
+
+    for (const part of cell.value.richText) {
+      const text = part.text ?? '';
+      const partIsRemoved = Boolean(part.font?.strike);
+      const segments = text.split('\n');
+
+      segments.forEach((segment, index) => {
+        if (segment) {
+          currentText += segment;
+          currentIsRemoved = currentIsRemoved || partIsRemoved;
+        }
+        if (index < segments.length - 1) {
+          pushLine(flags, currentText, currentIsRemoved);
+          currentText = '';
+          currentIsRemoved = false;
+        }
+      });
+    }
+
+    pushLine(flags, currentText, currentIsRemoved);
+    return flags;
+  }
+
+  const text = getCellText(cell);
+  if (!text) return [];
+  const splitCount = splitLabels(text).length;
+  return Array.from({ length: splitCount }, () => cellSignalsRemoved(cell));
+}
+
+function buildValidationItemFieldFlags(cell: ExcelJS.Cell): ValidationItemFieldFlags[] {
+  if (
+    typeof cell.value === 'object' &&
+    cell.value !== null &&
+    'richText' in cell.value &&
+    Array.isArray(cell.value.richText)
+  ) {
+    const lineSegments: Array<Array<{ text: string; isNew: boolean; isRemoved: boolean }>> = [];
+    let currentLine: Array<{ text: string; isNew: boolean; isRemoved: boolean }> = [];
+
+    const pushCurrentLine = () => {
+      if (currentLine.map((segment) => segment.text).join('').trim()) {
+        lineSegments.push(currentLine);
+      }
+      currentLine = [];
+    };
+
+    for (const part of cell.value.richText) {
+      const text = part.text ?? '';
+      const isRemoved = Boolean(part.font?.strike);
+      const isNew = !isRemoved && isRedArgb(getConcreteArgb(part.font?.color));
+      const segments = text.split('\n');
+
+      segments.forEach((segment, index) => {
+        if (segment) {
+          currentLine.push({ text: segment, isNew, isRemoved });
+        }
+        if (index < segments.length - 1) {
+          pushCurrentLine();
+        }
+      });
+    }
+
+    pushCurrentLine();
+
+    return lineSegments.map((segments) => {
+      const lineText = segments.map((segment) => segment.text).join('');
+      const separatorIndex = lineText.indexOf(':');
+      const key = { isNew: false, isRemoved: false };
+      const value = { isNew: false, isRemoved: false };
+      let cursor = 0;
+
+      segments.forEach((segment) => {
+        for (const _character of segment.text) {
+          const target = separatorIndex >= 0 && cursor > separatorIndex ? value : key;
+          if (segment.isRemoved) {
+            target.isRemoved = true;
+            target.isNew = false;
+          } else if (segment.isNew) {
+            target.isNew = true;
+          }
+          cursor += 1;
+        }
+      });
+
+      return { key, value };
+    });
+  }
+
+  const lineNewFlags = buildCellLineNewFlags(cell);
+  const lineRemovedFlags = buildCellLineRemovedFlags(cell);
+  return splitValidationLines(getCellText(cell)).map((_, index) => ({
+    key: { isNew: lineNewFlags[index], isRemoved: lineRemovedFlags[index] },
+    value: { isNew: lineNewFlags[index], isRemoved: lineRemovedFlags[index] },
+  }));
+}
+
 function buildInputRows(worksheet: ExcelJS.Worksheet): {
   rows: Array<Array<string | null>>;
   styleRows: boolean[][];
   removedStyleRows: boolean[][];
   lineStyleRows: boolean[][][];
+  lineRemovedRows: boolean[][][];
+  validationFieldRows: ValidationItemFieldFlags[][][];
 } {
   let maxCol = 0;
   worksheet.eachRow({ includeEmpty: false }, (row) => {
@@ -317,6 +525,8 @@ function buildInputRows(worksheet: ExcelJS.Worksheet): {
   const styleRows: boolean[][] = [];
   const removedStyleRows: boolean[][] = [];
   const lineStyleRows: boolean[][][] = [];
+  const lineRemovedRows: boolean[][][] = [];
+  const validationFieldRows: ValidationItemFieldFlags[][][] = [];
 
   for (let rowIndex = 1; rowIndex <= worksheet.rowCount; rowIndex++) {
     const row = worksheet.getRow(rowIndex);
@@ -324,6 +534,8 @@ function buildInputRows(worksheet: ExcelJS.Worksheet): {
     const styles = Array<boolean>(maxCol).fill(false);
     const removedStyles = Array<boolean>(maxCol).fill(false);
     const lineStyles = Array.from({ length: maxCol }, () => [] as boolean[]);
+    const lineRemoved = Array.from({ length: maxCol }, () => [] as boolean[]);
+    const validationFields = Array.from({ length: maxCol }, () => [] as ValidationItemFieldFlags[]);
 
     for (let colIndex = 1; colIndex <= maxCol; colIndex++) {
       const cell = row.getCell(colIndex);
@@ -336,15 +548,19 @@ function buildInputRows(worksheet: ExcelJS.Worksheet): {
       styles[colIndex - 1] = isMergedChild ? false : cellSignalsNew(cell);
       removedStyles[colIndex - 1] = isMergedChild ? false : cellSignalsRemoved(cell);
       lineStyles[colIndex - 1] = isMergedChild ? [] : buildCellLineNewFlags(cell);
+      lineRemoved[colIndex - 1] = isMergedChild ? [] : buildCellLineRemovedFlags(cell);
+      validationFields[colIndex - 1] = isMergedChild ? [] : buildValidationItemFieldFlags(cell);
     }
 
     rows.push(values);
     styleRows.push(styles);
     removedStyleRows.push(removedStyles);
     lineStyleRows.push(lineStyles);
+    lineRemovedRows.push(lineRemoved);
+    validationFieldRows.push(validationFields);
   }
 
-  return { rows, styleRows, removedStyleRows, lineStyleRows };
+  return { rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows, validationFieldRows };
 }
 
 function buildColMap(rows: Array<Array<string | null>>): {
@@ -469,6 +685,9 @@ function parseFormattedWorkbook(
   rows: Array<Array<string | null>>,
   styleRows: boolean[][],
   removedStyleRows: boolean[][],
+  lineStyleRows: boolean[][][],
+  lineRemovedRows: boolean[][][],
+  validationFieldRows: ValidationItemFieldFlags[][][],
 ): QleWorkbookModel {
   const headerIndex = findFormattedHeaderIndex(rows);
   if (headerIndex < 0) {
@@ -483,6 +702,9 @@ function parseFormattedWorkbook(
     const row = rows[rowIndex];
     const styles = styleRows[rowIndex] ?? [];
     const removedStyles = removedStyleRows[rowIndex] ?? [];
+    const lineStyles = lineStyleRows[rowIndex] ?? [];
+    const lineRemoved = lineRemovedRows[rowIndex] ?? [];
+    const validationFields = validationFieldRows[rowIndex] ?? [];
     const field = normalise(row[0]).trim();
     const enumValue = normalise(row[1]).trim();
     const enValue = normalise(row[2]).trim();
@@ -501,6 +723,7 @@ function parseFormattedWorkbook(
         enumRows: [],
         instructionsEn: '',
         instructionsEs: '',
+        fieldStates: {},
         isRemoved: removedStyles.some(Boolean),
         isNew: styles.some(Boolean) && !removedStyles.some(Boolean),
         categories: [],
@@ -520,6 +743,11 @@ function parseFormattedWorkbook(
         enum: enumValue,
         en: enValue,
         es: esValue,
+        fieldStates: buildFieldStates({
+          enum: { isNew: styles[1], isRemoved: removedStyles[1] },
+          en: { isNew: styles[2], isRemoved: removedStyles[2] },
+          es: { isNew: styles[3], isRemoved: removedStyles[3] },
+        }),
         isRemoved: [1, 2, 3].some((index) => removedStyles[index]),
         isNew:
           [1, 2, 3].some((index) => styles[index]) &&
@@ -531,20 +759,40 @@ function parseFormattedWorkbook(
     if (field === 'Instructions') {
       currentEvent.instructionsEn = enValue;
       currentEvent.instructionsEs = esValue;
+      currentEvent.fieldStates = {
+        ...(currentEvent.fieldStates ?? {}),
+        ...buildFieldStates({
+          instructionsEn: { isNew: styles[2], isRemoved: removedStyles[2] },
+          instructionsEs: { isNew: styles[3], isRemoved: removedStyles[3] },
+        }),
+      };
       continue;
     }
 
     if (field === 'CATEGORY') {
+      const validationItems = parseValidationItems(
+        validationValue,
+        lineStyles[4] ?? [],
+        lineRemoved[4] ?? [],
+        validationFields[4] ?? [],
+      );
       currentCategory = {
         id: randomUUID(),
         enum: enumValue,
         en: enValue,
         es: esValue,
-        validation: validationValue,
-        isRemoved: [0, 1, 2, 3, 4].some((index) => removedStyles[index]),
+        validation: validationItems.length > 0 ? serializeValidationItems(validationItems) : validationValue,
+        validationItems,
+        fieldStates: buildFieldStates({
+          enum: { isNew: styles[1], isRemoved: removedStyles[1] },
+          en: { isNew: styles[2], isRemoved: removedStyles[2] },
+          es: { isNew: styles[3], isRemoved: removedStyles[3] },
+          validation: { isNew: styles[4], isRemoved: removedStyles[4] },
+        }),
+        isRemoved: [0, 1, 2, 3].some((index) => removedStyles[index]),
         isNew:
-          [0, 1, 2, 3, 4].some((index) => styles[index]) &&
-          ![0, 1, 2, 3, 4].some((index) => removedStyles[index]),
+          [0, 1, 2, 3].some((index) => styles[index]) &&
+          ![0, 1, 2, 3].some((index) => removedStyles[index]),
         documents: [],
       };
       currentEvent.categories.push(currentCategory);
@@ -558,6 +806,11 @@ function parseFormattedWorkbook(
         en: enValue,
         es: esValue,
         sort: sortValue ? Number(sortValue) || null : null,
+        fieldStates: buildFieldStates({
+          enum: { isNew: styles[1], isRemoved: removedStyles[1] || currentCategory.isRemoved },
+          en: { isNew: styles[2], isRemoved: removedStyles[2] || currentCategory.isRemoved },
+          es: { isNew: styles[3], isRemoved: removedStyles[3] || currentCategory.isRemoved },
+        }),
         isRemoved: [1, 2, 3, 5].some((index) => removedStyles[index]) || currentCategory.isRemoved,
         isNew:
           [1, 2, 3, 5].some((index) => styles[index]) &&
@@ -585,9 +838,18 @@ export async function importWorkbook(
   const worksheet = workbook.getWorksheet(sheetName);
   if (!worksheet) throw new Error(`Worksheet not found: ${sheetName}`);
 
-  const { rows, styleRows, removedStyleRows, lineStyleRows } = buildInputRows(worksheet);
+  const { rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows, validationFieldRows } = buildInputRows(worksheet);
   if (findFormattedHeaderIndex(rows) >= 0) {
-    return parseFormattedWorkbook(fileName, sheetName, rows, styleRows, removedStyleRows);
+    return parseFormattedWorkbook(
+      fileName,
+      sheetName,
+      rows,
+      styleRows,
+      removedStyleRows,
+      lineStyleRows,
+      lineRemovedRows,
+      validationFieldRows,
+    );
   }
 
   const { map, dataStart } = buildColMap(rows);
@@ -626,13 +888,15 @@ export async function importWorkbook(
     const rowStyles = styleRows[rowIndex] ?? [];
     const rowRemovedStyles = removedStyleRows[rowIndex] ?? [];
     const rowLineStyles = lineStyleRows[rowIndex] ?? [];
+    const rowLineRemoved = lineRemovedRows[rowIndex] ?? [];
+    const rowValidationFields = validationFieldRows[rowIndex] ?? [];
     const eventHasHighlight = hasNew(rowStyles, [0, 1, 2, 3, 4]);
     const eventInstructionsHaveHighlight = hasNew(rowStyles, [3, 4]);
-    const categoryHasHighlight = hasNew(rowStyles, [5, 6, 7, 12]);
+    const categoryHasHighlight = hasNew(rowStyles, [5, 6, 7]);
     const documentHasHighlight = hasNew(rowStyles, [8, 9, 10, 11]);
     const documentContinuationHasHighlight = hasNew(rowStyles, [9, 10]);
     const eventIsRemoved = hasRemoved(rowRemovedStyles, [0, 1, 2, 3, 4]);
-    const categoryIsRemoved = hasRemoved(rowRemovedStyles, [5, 6, 7, 12]);
+    const categoryIsRemoved = hasRemoved(rowRemovedStyles, [5, 6, 7]);
     const documentIsRemoved = hasRemoved(rowRemovedStyles, [8, 9, 10, 11]);
     const eventEnum = getString(row, 0);
     const eventEn = getString(row, 1);
@@ -681,11 +945,20 @@ export async function importWorkbook(
           enum: value,
           en: englishRows[index] ?? englishRows[englishRows.length - 1] ?? '',
           es: spanishRows[index] ?? spanishRows[spanishRows.length - 1] ?? '',
+          fieldStates: buildFieldStates({
+            enum: { isNew: eventFlags.itemFlags[index], isRemoved: eventIsRemoved },
+            en: { isNew: eventFlags.itemFlags[index], isRemoved: eventIsRemoved },
+            es: { isNew: eventFlags.itemFlags[index], isRemoved: eventIsRemoved },
+          }),
           isNew: eventFlags.itemFlags[index] ?? false,
           manualIsNew: null,
         })),
         instructionsEn: instructionsEn ?? '',
         instructionsEs: instructionsEs ?? '',
+        fieldStates: buildFieldStates({
+          instructionsEn: { isNew: eventInstructionsHaveHighlight, isRemoved: eventIsRemoved },
+          instructionsEs: { isNew: eventInstructionsHaveHighlight, isRemoved: eventIsRemoved },
+        }),
         isNew: eventFlags.rowIsNew,
         manualIsNew: null,
         isRemoved: eventIsRemoved,
@@ -697,12 +970,25 @@ export async function importWorkbook(
     }
 
     if (categoryEnum && currentEvent) {
+      const validationItems = parseValidationItems(
+        validationRule,
+        (rowLineStyles[map[12] ?? -1] ?? []).slice(),
+        (rowLineRemoved[map[12] ?? -1] ?? []).slice(),
+        (rowValidationFields[map[12] ?? -1] ?? []).slice(),
+      );
       currentCategory = {
         id: randomUUID(),
         enum: categoryEnum,
         en: categoryEn ?? '',
         es: categoryEs ?? '',
-        validation: validationRule ?? '',
+        validation: validationItems.length > 0 ? serializeValidationItems(validationItems) : validationRule ?? '',
+        validationItems,
+        fieldStates: buildFieldStates({
+          enum: { isNew: rowStyles[map[5] ?? -1], isRemoved: currentEvent.isRemoved || categoryIsRemoved },
+          en: { isNew: rowStyles[map[6] ?? -1], isRemoved: currentEvent.isRemoved || categoryIsRemoved },
+          es: { isNew: rowStyles[map[7] ?? -1], isRemoved: currentEvent.isRemoved || categoryIsRemoved },
+          validation: { isNew: rowStyles[map[12] ?? -1], isRemoved: currentEvent.isRemoved || categoryIsRemoved },
+        }),
         manualIsNew: null,
         isRemoved: currentEvent.isRemoved || categoryIsRemoved,
         isNew: categoryHasHighlight && !(currentEvent.isRemoved || categoryIsRemoved),
@@ -721,6 +1007,20 @@ export async function importWorkbook(
       const docs = parsedDocs.map((doc, index) => ({
         id: randomUUID(),
         ...doc,
+        fieldStates: buildFieldStates({
+          enum: {
+            isNew: docFlags.itemFlags[index],
+            isRemoved: Boolean(currentEvent?.isRemoved || currentCategory?.isRemoved || documentIsRemoved),
+          },
+          en: {
+            isNew: docFlags.itemFlags[index],
+            isRemoved: Boolean(currentEvent?.isRemoved || currentCategory?.isRemoved || documentIsRemoved),
+          },
+          es: {
+            isNew: docFlags.itemFlags[index],
+            isRemoved: Boolean(currentEvent?.isRemoved || currentCategory?.isRemoved || documentIsRemoved),
+          },
+        }),
         manualIsNew: null,
         isRemoved: Boolean(currentEvent?.isRemoved || currentCategory?.isRemoved || documentIsRemoved),
         isNew:
@@ -732,8 +1032,36 @@ export async function importWorkbook(
     } else if (!documentEnum && currentCategory && lastDocument && (documentEn || documentEs)) {
       if (documentEn) lastDocument.en = lastDocument.en ? `${lastDocument.en}\n${documentEn}` : documentEn;
       if (documentEs) lastDocument.es = lastDocument.es ? `${lastDocument.es}\n${documentEs}` : documentEs;
-      if (documentContinuationHasHighlight) lastDocument.isNew = true;
-      if (documentIsRemoved) lastDocument.isRemoved = true;
+      if (documentContinuationHasHighlight) {
+        lastDocument.isNew = true;
+        lastDocument.fieldStates = {
+          ...(lastDocument.fieldStates ?? {}),
+          en: {
+            ...(lastDocument.fieldStates?.en ?? { manualIsNew: null }),
+            isNew: true,
+          },
+          es: {
+            ...(lastDocument.fieldStates?.es ?? { manualIsNew: null }),
+            isNew: true,
+          },
+        };
+      }
+      if (documentIsRemoved) {
+        lastDocument.isRemoved = true;
+        lastDocument.fieldStates = {
+          ...(lastDocument.fieldStates ?? {}),
+          en: {
+            ...(lastDocument.fieldStates?.en ?? { manualIsNew: null }),
+            isRemoved: true,
+            isNew: false,
+          },
+          es: {
+            ...(lastDocument.fieldStates?.es ?? { manualIsNew: null }),
+            isRemoved: true,
+            isNew: false,
+          },
+        };
+      }
     }
   }
 
@@ -774,6 +1102,71 @@ function styleCell(cell: ExcelJS.Cell, value: string | number, options: {
     bottom: { style: 'thin', color: { argb: 'FFB8CCE4' } },
     left: { style: 'thin', color: { argb: 'FFB8CCE4' } },
     right: { style: 'thin', color: { argb: 'FFB8CCE4' } },
+  };
+}
+
+function buildValidationCellValue(category: QleCategory): ExcelJS.CellValue {
+  const items = category.validationItems ?? [];
+  if (items.length === 0) {
+    return category.validation;
+  }
+
+  const richText: ExcelJS.RichText[] = [];
+
+  items.forEach((item, index) => {
+    if (!item.key.trim()) {
+      return;
+    }
+
+    const prefix = `${item.key.trim()}: `;
+    const value = item.value.trim();
+    const suffix = index < items.length - 1 ? '\n' : '';
+    const keyStyle = validationItemFieldStyle(item, 'key');
+    const valueStyle = validationItemFieldStyle(item, 'value');
+
+    richText.push({
+      font: {
+        size: 8,
+        name: 'Courier New',
+        family: 3,
+        bold: keyStyle.isNew,
+        color: { argb: keyStyle.isRemoved || keyStyle.isNew ? COLORS.removedFg : COLORS.validationFg },
+        strike: keyStyle.isRemoved,
+      },
+      text: prefix,
+    });
+    richText.push({
+      font: {
+        size: 8,
+        name: 'Courier New',
+        family: 3,
+        bold: valueStyle.isNew,
+        color: {
+          argb: valueStyle.isRemoved || valueStyle.isNew ? COLORS.removedFg : COLORS.validationFg,
+        },
+        strike: valueStyle.isRemoved,
+      },
+      text: `${value}${suffix}`,
+    });
+  });
+
+  return richText.length > 0 ? { richText } : category.validation;
+}
+
+function resolveFieldStyle(
+  fieldState: QleFieldStateMap[string] | undefined,
+  baseBg: string,
+  baseFg: string,
+  newBg: string,
+  entityIsNew: boolean,
+  entityIsRemoved: boolean,
+) {
+  const isRemoved = entityIsRemoved || Boolean(fieldState?.isRemoved);
+  const isNew = !isRemoved && (entityIsNew || Boolean(fieldState?.isNew));
+  return {
+    bg: isRemoved ? COLORS.removedBg : isNew ? newBg : baseBg,
+    fg: isRemoved ? COLORS.removedFg : isNew ? 'FFC00000' : baseFg,
+    strike: isRemoved,
   };
 }
 
@@ -835,38 +1228,62 @@ export async function exportWorkbook(model: QleWorkbookModel): Promise<Buffer> {
     row += 1;
 
     for (const enumRow of event.enumRows) {
-      const isNew = event.isNew || enumRow.isNew;
       const isRemoved = eventIsRemoved || Boolean(enumRow.isRemoved);
+      const enumIsNew = Boolean(event.isNew || enumRow.isNew);
+      const enumStyle = resolveFieldStyle(
+        enumRow.fieldStates?.enum,
+        COLORS.enumBg,
+        'FF1A3A1A',
+        'FFFFF3CD',
+        enumIsNew,
+        isRemoved,
+      );
+      const enumEnStyle = resolveFieldStyle(
+        enumRow.fieldStates?.en,
+        COLORS.eventLabel,
+        'FF1F3864',
+        'FFFFEB9C',
+        enumIsNew,
+        isRemoved,
+      );
+      const enumEsStyle = resolveFieldStyle(
+        enumRow.fieldStates?.es,
+        COLORS.eventLabel,
+        'FF595959',
+        'FFFFEB9C',
+        enumIsNew,
+        isRemoved,
+      );
       styleCell(worksheet.getCell(row, 1), 'Enum', {
-        bg: isRemoved ? COLORS.removedBg : isNew ? 'FFFF8C00' : COLORS.eventKey,
+        bg: isRemoved ? COLORS.removedBg : enumIsNew ? 'FFFF8C00' : COLORS.eventKey,
         fg: isRemoved ? COLORS.removedFg : 'FFFFFFFF',
         bold: true,
         strike: isRemoved,
         align: 'right',
       });
       styleCell(worksheet.getCell(row, 2), enumRow.enum, {
-        bg: isRemoved ? COLORS.removedBg : isNew ? 'FFFFF3CD' : COLORS.enumBg,
-        fg: isRemoved ? COLORS.removedFg : isNew ? 'FFC00000' : 'FF1A3A1A',
+        bg: enumStyle.bg,
+        fg: enumStyle.fg,
         bold: true,
-        strike: isRemoved,
+        strike: enumStyle.strike,
         mono: true,
       });
       styleCell(worksheet.getCell(row, 3), enumRow.en, {
-        bg: isRemoved ? COLORS.removedBg : isNew ? 'FFFFEB9C' : COLORS.eventLabel,
-        fg: isRemoved ? COLORS.removedFg : isNew ? 'FFC00000' : 'FF1F3864',
-        strike: isRemoved,
+        bg: enumEnStyle.bg,
+        fg: enumEnStyle.fg,
+        strike: enumEnStyle.strike,
       });
       styleCell(worksheet.getCell(row, 4), enumRow.es, {
-        bg: isRemoved ? COLORS.removedBg : isNew ? 'FFFFEB9C' : COLORS.eventLabel,
-        fg: isRemoved ? COLORS.removedFg : isNew ? 'FFC00000' : 'FF595959',
-        strike: isRemoved,
+        bg: enumEsStyle.bg,
+        fg: enumEsStyle.fg,
+        strike: enumEsStyle.strike,
       });
       styleCell(worksheet.getCell(row, 5), '', {
-        bg: isRemoved ? COLORS.removedBg : isNew ? 'FFFFEB9C' : COLORS.eventLabel,
+        bg: isRemoved ? COLORS.removedBg : COLORS.eventLabel,
         strike: isRemoved,
       });
       styleCell(worksheet.getCell(row, 6), '', {
-        bg: isRemoved ? COLORS.removedBg : isNew ? 'FFFFEB9C' : COLORS.eventLabel,
+        bg: isRemoved ? COLORS.removedBg : COLORS.eventLabel,
         strike: isRemoved,
       });
       row += 1;
@@ -881,25 +1298,41 @@ export async function exportWorkbook(model: QleWorkbookModel): Promise<Buffer> {
         align: 'right',
       });
       styleCell(worksheet.getCell(row, 2), '', {
-        bg: eventIsRemoved ? COLORS.removedBg : event.isNew ? 'FFFFF9E6' : COLORS.instructions,
+        bg: eventIsRemoved ? COLORS.removedBg : COLORS.instructions,
         strike: eventIsRemoved,
       });
+      const instructionsEnStyle = resolveFieldStyle(
+        event.fieldStates?.instructionsEn,
+        COLORS.instructions,
+        'FF1F3864',
+        'FFFFF9E6',
+        Boolean(event.isNew),
+        eventIsRemoved,
+      );
       styleCell(worksheet.getCell(row, 3), event.instructionsEn, {
-        bg: eventIsRemoved ? COLORS.removedBg : event.isNew ? 'FFFFF9E6' : COLORS.instructions,
-        fg: eventIsRemoved ? COLORS.removedFg : event.isNew ? 'FFC00000' : 'FF1F3864',
-        strike: eventIsRemoved,
+        bg: instructionsEnStyle.bg,
+        fg: instructionsEnStyle.fg,
+        strike: instructionsEnStyle.strike,
       });
+      const instructionsEsStyle = resolveFieldStyle(
+        event.fieldStates?.instructionsEs,
+        COLORS.instructions,
+        'FF595959',
+        'FFFFF9E6',
+        Boolean(event.isNew),
+        eventIsRemoved,
+      );
       styleCell(worksheet.getCell(row, 4), event.instructionsEs, {
-        bg: eventIsRemoved ? COLORS.removedBg : event.isNew ? 'FFFFF9E6' : COLORS.instructions,
-        fg: eventIsRemoved ? COLORS.removedFg : event.isNew ? 'FFC00000' : 'FF595959',
-        strike: eventIsRemoved,
+        bg: instructionsEsStyle.bg,
+        fg: instructionsEsStyle.fg,
+        strike: instructionsEsStyle.strike,
       });
       styleCell(worksheet.getCell(row, 5), '', {
-        bg: eventIsRemoved ? COLORS.removedBg : event.isNew ? 'FFFFF9E6' : COLORS.instructions,
+        bg: eventIsRemoved ? COLORS.removedBg : COLORS.instructions,
         strike: eventIsRemoved,
       });
       styleCell(worksheet.getCell(row, 6), '', {
-        bg: eventIsRemoved ? COLORS.removedBg : event.isNew ? 'FFFFF9E6' : COLORS.instructions,
+        bg: eventIsRemoved ? COLORS.removedBg : COLORS.instructions,
         strike: eventIsRemoved,
       });
       row += 1;
@@ -908,6 +1341,33 @@ export async function exportWorkbook(model: QleWorkbookModel): Promise<Buffer> {
     for (const category of event.categories) {
       const categoryIsNew = event.isNew || category.isNew;
       const categoryIsRemoved = eventIsRemoved || Boolean(category.isRemoved);
+      const validationItems = category.validationItems ?? [];
+      const validationHasRemoved = validationItems.some((item) => validationItemHasRemoved(item));
+      const validationHasNew = validationItems.some((item) => validationItemHasNew(item));
+      const categoryEnumStyle = resolveFieldStyle(
+        category.fieldStates?.enum,
+        COLORS.category,
+        'FFFFFFFF',
+        'FFFFEB9C',
+        Boolean(categoryIsNew),
+        categoryIsRemoved,
+      );
+      const categoryEnStyle = resolveFieldStyle(
+        category.fieldStates?.en,
+        COLORS.category,
+        'FFFFFFFF',
+        'FFFFEB9C',
+        Boolean(categoryIsNew),
+        categoryIsRemoved,
+      );
+      const categoryEsStyle = resolveFieldStyle(
+        category.fieldStates?.es,
+        COLORS.category,
+        'FFFFFFFF',
+        'FFFFEB9C',
+        Boolean(categoryIsNew),
+        categoryIsRemoved,
+      );
       styleCell(worksheet.getCell(row, 1), 'CATEGORY', {
         bg: categoryIsRemoved ? COLORS.removedBg : categoryIsNew ? 'FFFFEB9C' : COLORS.category,
         fg: categoryIsRemoved ? COLORS.removedFg : categoryIsNew ? 'FFC00000' : 'FFFFFFFF',
@@ -916,28 +1376,37 @@ export async function exportWorkbook(model: QleWorkbookModel): Promise<Buffer> {
         align: 'center',
       });
       styleCell(worksheet.getCell(row, 2), category.enum, {
-        bg: categoryIsRemoved ? COLORS.removedBg : categoryIsNew ? 'FFFFEB9C' : COLORS.category,
-        fg: categoryIsRemoved ? COLORS.removedFg : categoryIsNew ? 'FFC00000' : 'FFFFFFFF',
+        bg: categoryEnumStyle.bg,
+        fg: categoryEnumStyle.fg,
         bold: true,
-        strike: categoryIsRemoved,
+        strike: categoryEnumStyle.strike,
         mono: true,
       });
       styleCell(worksheet.getCell(row, 3), category.en, {
-        bg: categoryIsRemoved ? COLORS.removedBg : categoryIsNew ? 'FFFFEB9C' : COLORS.category,
-        fg: categoryIsRemoved ? COLORS.removedFg : categoryIsNew ? 'FFC00000' : 'FFFFFFFF',
+        bg: categoryEnStyle.bg,
+        fg: categoryEnStyle.fg,
         bold: true,
-        strike: categoryIsRemoved,
+        strike: categoryEnStyle.strike,
       });
       styleCell(worksheet.getCell(row, 4), category.es, {
-        bg: categoryIsRemoved ? COLORS.removedBg : categoryIsNew ? 'FFFFEB9C' : COLORS.category,
-        fg: categoryIsRemoved ? COLORS.removedFg : categoryIsNew ? 'FFC00000' : 'FFFFFFFF',
-        strike: categoryIsRemoved,
+        bg: categoryEsStyle.bg,
+        fg: categoryEsStyle.fg,
+        strike: categoryEsStyle.strike,
       });
-      styleCell(worksheet.getCell(row, 5), category.validation, {
-        bg: categoryIsRemoved ? COLORS.removedBg : categoryIsNew ? 'FFFFF9E6' : COLORS.validationBg,
-        fg: categoryIsRemoved ? COLORS.removedFg : categoryIsNew ? 'FFC00000' : COLORS.validationFg,
+      styleCell(worksheet.getCell(row, 5), '', {
+        bg: categoryIsRemoved
+          ? COLORS.removedBg
+          : validationHasRemoved
+            ? COLORS.removedBg
+            : validationHasNew
+              ? 'FFFFF9E6'
+              : COLORS.validationBg,
+        fg: categoryIsRemoved ? COLORS.removedFg : COLORS.validationFg,
         strike: categoryIsRemoved,
+        mono: true,
+        size: 8,
       });
+      worksheet.getCell(row, 5).value = categoryIsRemoved ? category.validation : buildValidationCellValue(category);
       styleCell(worksheet.getCell(row, 6), '', {
         bg: categoryIsRemoved ? COLORS.removedBg : categoryIsNew ? 'FFFFEB9C' : COLORS.category,
         fg: categoryIsRemoved ? COLORS.removedFg : categoryIsNew ? 'FFC00000' : 'FFFFFFFF',
@@ -968,6 +1437,30 @@ export async function exportWorkbook(model: QleWorkbookModel): Promise<Buffer> {
             : index % 2 === 1
               ? COLORS.alt
               : COLORS.white;
+        const documentEnumStyle = resolveFieldStyle(
+          document.fieldStates?.enum,
+          COLORS.enumBg,
+          'FF375623',
+          'FFFFF3CD',
+          Boolean(docIsNew),
+          docIsRemoved,
+        );
+        const documentEnStyle = resolveFieldStyle(
+          document.fieldStates?.en,
+          background,
+          'FF000000',
+          'FFFFEB9C',
+          Boolean(docIsNew),
+          docIsRemoved,
+        );
+        const documentEsStyle = resolveFieldStyle(
+          document.fieldStates?.es,
+          background,
+          'FF595959',
+          'FFFFEB9C',
+          Boolean(docIsNew),
+          docIsRemoved,
+        );
         styleCell(worksheet.getCell(row, 1), 'DOC', {
           bg: background,
           fg: docIsRemoved ? COLORS.removedFg : docIsNew ? 'FFC00000' : 'FF2F5496',
@@ -976,22 +1469,22 @@ export async function exportWorkbook(model: QleWorkbookModel): Promise<Buffer> {
           size: 7,
         });
         styleCell(worksheet.getCell(row, 2), document.enum, {
-          bg: docIsRemoved ? COLORS.removedBg : docIsNew ? 'FFFFF3CD' : COLORS.enumBg,
-          fg: docIsRemoved ? COLORS.removedFg : docIsNew ? 'FFC00000' : 'FF375623',
+          bg: documentEnumStyle.bg,
+          fg: documentEnumStyle.fg,
           bold: true,
-          strike: docIsRemoved,
+          strike: documentEnumStyle.strike,
           mono: true,
           size: 8,
         });
         styleCell(worksheet.getCell(row, 3), document.en, {
-          bg: background,
-          fg: docIsRemoved ? COLORS.removedFg : docIsNew ? 'FFC00000' : 'FF000000',
-          strike: docIsRemoved,
+          bg: documentEnStyle.bg,
+          fg: documentEnStyle.fg,
+          strike: documentEnStyle.strike,
         });
         styleCell(worksheet.getCell(row, 4), document.es, {
-          bg: background,
-          fg: docIsRemoved ? COLORS.removedFg : docIsNew ? 'FFC00000' : 'FF595959',
-          strike: docIsRemoved,
+          bg: documentEsStyle.bg,
+          fg: documentEsStyle.fg,
+          strike: documentEsStyle.strike,
           size: 8,
         });
         styleCell(worksheet.getCell(row, 5), '', { bg: background, strike: docIsRemoved });

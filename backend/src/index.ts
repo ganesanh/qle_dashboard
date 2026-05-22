@@ -725,16 +725,39 @@ async function runDeveloperPostPushSkill(args: {
   return { ok: true, summary, error: '' };
 }
 
+function fieldStatesHaveChanges(fieldStates: Record<string, { isNew?: boolean; isRemoved?: boolean } | undefined> | undefined) {
+  return Object.values(fieldStates ?? {}).some(
+    (fieldState) => Boolean(fieldState?.isNew) || Boolean(fieldState?.isRemoved),
+  );
+}
+
+function validationItemHasChanges(item: NonNullable<QleWorkbookModel['events'][number]['categories'][number]['validationItems']>[number]) {
+  return Boolean(item.isNew) || Boolean(item.isRemoved) || fieldStatesHaveChanges(item.fieldStates);
+}
+
 function eventHasWorkbookChanges(event: QleWorkbookModel['events'][number]) {
   return (
     Boolean(event.isNew) ||
     Boolean(event.isRemoved) ||
-    event.enumRows.some((row) => Boolean(row.isNew)) ||
+    fieldStatesHaveChanges(event.fieldStates) ||
+    event.enumRows.some(
+      (row) =>
+        Boolean(row.isNew) ||
+        Boolean(row.isRemoved) ||
+        fieldStatesHaveChanges(row.fieldStates),
+    ) ||
     event.categories.some(
       (category) =>
         Boolean(category.isNew) ||
         Boolean(category.isRemoved) ||
-        category.documents.some((document) => Boolean(document.isNew) || Boolean(document.isRemoved)),
+        fieldStatesHaveChanges(category.fieldStates) ||
+        (category.validationItems ?? []).some((item) => validationItemHasChanges(item)) ||
+        category.documents.some(
+          (document) =>
+            Boolean(document.isNew) ||
+            Boolean(document.isRemoved) ||
+            fieldStatesHaveChanges(document.fieldStates),
+        ),
     )
   );
 }
@@ -815,12 +838,22 @@ const workbookSchema: z.ZodType<QleWorkbookModel> = z.lazy(() =>
     fileName: z.string(),
     sourceSheet: z.string(),
     importedAt: z.string(),
+    // Keep field-level state permissive so older and newer workbooks can round-trip.
     events: z.array(
       z.object({
         id: z.string(),
         eventNumber: z.number(),
         instructionsEn: z.string(),
         instructionsEs: z.string(),
+        fieldStates: z.record(
+          z
+            .object({
+              isNew: z.boolean().optional(),
+              manualIsNew: z.boolean().nullable().optional(),
+              isRemoved: z.boolean().optional(),
+            })
+            .optional(),
+        ).optional(),
         isNew: z.boolean().optional(),
         manualIsNew: z.boolean().nullable().optional(),
         isRemoved: z.boolean().optional(),
@@ -830,6 +863,15 @@ const workbookSchema: z.ZodType<QleWorkbookModel> = z.lazy(() =>
             enum: z.string(),
             en: z.string(),
             es: z.string(),
+            fieldStates: z.record(
+              z
+                .object({
+                  isNew: z.boolean().optional(),
+                  manualIsNew: z.boolean().nullable().optional(),
+                  isRemoved: z.boolean().optional(),
+                })
+                .optional(),
+            ).optional(),
             isNew: z.boolean().optional(),
             manualIsNew: z.boolean().nullable().optional(),
             isRemoved: z.boolean().optional(),
@@ -842,6 +884,36 @@ const workbookSchema: z.ZodType<QleWorkbookModel> = z.lazy(() =>
             en: z.string(),
             es: z.string(),
             validation: z.string(),
+            fieldStates: z.record(
+              z
+                .object({
+                  isNew: z.boolean().optional(),
+                  manualIsNew: z.boolean().nullable().optional(),
+                  isRemoved: z.boolean().optional(),
+                })
+                .optional(),
+            ).optional(),
+            validationItems: z
+              .array(
+                z.object({
+                  id: z.string(),
+                  key: z.string(),
+                  value: z.string(),
+                  fieldStates: z.record(
+                    z
+                      .object({
+                        isNew: z.boolean().optional(),
+                        manualIsNew: z.boolean().nullable().optional(),
+                        isRemoved: z.boolean().optional(),
+                      })
+                      .optional(),
+                  ).optional(),
+                  isNew: z.boolean().optional(),
+                  manualIsNew: z.boolean().nullable().optional(),
+                  isRemoved: z.boolean().optional(),
+                }),
+              )
+              .optional(),
             isNew: z.boolean().optional(),
             manualIsNew: z.boolean().nullable().optional(),
             isRemoved: z.boolean().optional(),
@@ -852,6 +924,15 @@ const workbookSchema: z.ZodType<QleWorkbookModel> = z.lazy(() =>
                 en: z.string(),
                 es: z.string(),
                 sort: z.number().nullable().optional(),
+                fieldStates: z.record(
+                  z
+                    .object({
+                      isNew: z.boolean().optional(),
+                      manualIsNew: z.boolean().nullable().optional(),
+                      isRemoved: z.boolean().optional(),
+                    })
+                    .optional(),
+                ).optional(),
                 isNew: z.boolean().optional(),
                 manualIsNew: z.boolean().nullable().optional(),
                 isRemoved: z.boolean().optional(),
@@ -893,6 +974,18 @@ function buildMarkedNewLines(model: QleWorkbookModel): string[] {
     if (event.isRemoved) {
       lines.push(`- [removed event] Event ${event.eventNumber}`);
     }
+    if (event.fieldStates?.instructionsEn?.isNew) {
+      lines.push(`- [new field] Event ${event.eventNumber} > English instructions`);
+    }
+    if (event.fieldStates?.instructionsEs?.isNew) {
+      lines.push(`- [new field] Event ${event.eventNumber} > Spanish instructions`);
+    }
+    if (event.fieldStates?.instructionsEn?.isRemoved) {
+      lines.push(`- [removed field] Event ${event.eventNumber} > English instructions`);
+    }
+    if (event.fieldStates?.instructionsEs?.isRemoved) {
+      lines.push(`- [removed field] Event ${event.eventNumber} > Spanish instructions`);
+    }
 
     event.enumRows.forEach((row) => {
       if (row.isNew) {
@@ -900,6 +993,24 @@ function buildMarkedNewLines(model: QleWorkbookModel): string[] {
       }
       if (row.isRemoved) {
         lines.push(`- [removed enum] Event ${event.eventNumber} > ${row.enum}`);
+      }
+      if (row.fieldStates?.enum?.isNew) {
+        lines.push(`- [new field] Event ${event.eventNumber} > ${row.enum} > enum`);
+      }
+      if (row.fieldStates?.en?.isNew) {
+        lines.push(`- [new field] Event ${event.eventNumber} > ${row.enum} > English label`);
+      }
+      if (row.fieldStates?.es?.isNew) {
+        lines.push(`- [new field] Event ${event.eventNumber} > ${row.enum} > Spanish label`);
+      }
+      if (row.fieldStates?.enum?.isRemoved) {
+        lines.push(`- [removed field] Event ${event.eventNumber} > ${row.enum} > enum`);
+      }
+      if (row.fieldStates?.en?.isRemoved) {
+        lines.push(`- [removed field] Event ${event.eventNumber} > ${row.enum} > English label`);
+      }
+      if (row.fieldStates?.es?.isRemoved) {
+        lines.push(`- [removed field] Event ${event.eventNumber} > ${row.enum} > Spanish label`);
       }
     });
 
@@ -910,6 +1021,63 @@ function buildMarkedNewLines(model: QleWorkbookModel): string[] {
       if (category.isRemoved) {
         lines.push(`- [removed category] Event ${event.eventNumber} > ${category.enum}`);
       }
+      if (category.fieldStates?.enum?.isNew) {
+        lines.push(`- [new field] Event ${event.eventNumber} > ${category.enum} > category enum`);
+      }
+      if (category.fieldStates?.en?.isNew) {
+        lines.push(`- [new field] Event ${event.eventNumber} > ${category.enum} > category English label`);
+      }
+      if (category.fieldStates?.es?.isNew) {
+        lines.push(`- [new field] Event ${event.eventNumber} > ${category.enum} > category Spanish label`);
+      }
+      if (category.fieldStates?.validation?.isNew && (category.validationItems ?? []).length === 0) {
+        lines.push(`- [new field] Event ${event.eventNumber} > ${category.enum} > validation rules`);
+      }
+      if (category.fieldStates?.enum?.isRemoved) {
+        lines.push(`- [removed field] Event ${event.eventNumber} > ${category.enum} > category enum`);
+      }
+      if (category.fieldStates?.en?.isRemoved) {
+        lines.push(`- [removed field] Event ${event.eventNumber} > ${category.enum} > category English label`);
+      }
+      if (category.fieldStates?.es?.isRemoved) {
+        lines.push(`- [removed field] Event ${event.eventNumber} > ${category.enum} > category Spanish label`);
+      }
+      if (category.fieldStates?.validation?.isRemoved && (category.validationItems ?? []).length === 0) {
+        lines.push(`- [removed field] Event ${event.eventNumber} > ${category.enum} > validation rules`);
+      }
+      (category.validationItems ?? []).forEach((item, itemIndex) => {
+        const itemLabel = item.key.trim() || `rule ${itemIndex + 1}`;
+        if (item.isNew && item.key.trim()) {
+          lines.push(
+            `- [new validation] Event ${event.eventNumber} > ${category.enum} > ${item.key.trim()}: ${item.value.trim()}`,
+          );
+        }
+        if (item.isRemoved && item.key.trim()) {
+          lines.push(
+            `- [removed validation] Event ${event.eventNumber} > ${category.enum} > ${item.key.trim()}: ${item.value.trim()}`,
+          );
+        }
+        if (!item.isNew && item.fieldStates?.key?.isNew) {
+          lines.push(
+            `- [new field] Event ${event.eventNumber} > ${category.enum} > validation rule ${itemLabel} > key`,
+          );
+        }
+        if (!item.isNew && item.fieldStates?.value?.isNew) {
+          lines.push(
+            `- [new field] Event ${event.eventNumber} > ${category.enum} > validation rule ${itemLabel} > value`,
+          );
+        }
+        if (!item.isRemoved && item.fieldStates?.key?.isRemoved) {
+          lines.push(
+            `- [removed field] Event ${event.eventNumber} > ${category.enum} > validation rule ${itemLabel} > key`,
+          );
+        }
+        if (!item.isRemoved && item.fieldStates?.value?.isRemoved) {
+          lines.push(
+            `- [removed field] Event ${event.eventNumber} > ${category.enum} > validation rule ${itemLabel} > value`,
+          );
+        }
+      });
 
       category.documents.forEach((document) => {
         if (document.isNew) {
@@ -920,6 +1088,36 @@ function buildMarkedNewLines(model: QleWorkbookModel): string[] {
         if (document.isRemoved) {
           lines.push(
             `- [removed document] Event ${event.eventNumber} > ${category.enum} > ${document.enum}`,
+          );
+        }
+        if (document.fieldStates?.enum?.isNew) {
+          lines.push(
+            `- [new field] Event ${event.eventNumber} > ${category.enum} > ${document.enum} > document enum`,
+          );
+        }
+        if (document.fieldStates?.en?.isNew) {
+          lines.push(
+            `- [new field] Event ${event.eventNumber} > ${category.enum} > ${document.enum} > English label`,
+          );
+        }
+        if (document.fieldStates?.es?.isNew) {
+          lines.push(
+            `- [new field] Event ${event.eventNumber} > ${category.enum} > ${document.enum} > Spanish label`,
+          );
+        }
+        if (document.fieldStates?.enum?.isRemoved) {
+          lines.push(
+            `- [removed field] Event ${event.eventNumber} > ${category.enum} > ${document.enum} > document enum`,
+          );
+        }
+        if (document.fieldStates?.en?.isRemoved) {
+          lines.push(
+            `- [removed field] Event ${event.eventNumber} > ${category.enum} > ${document.enum} > English label`,
+          );
+        }
+        if (document.fieldStates?.es?.isRemoved) {
+          lines.push(
+            `- [removed field] Event ${event.eventNumber} > ${category.enum} > ${document.enum} > Spanish label`,
           );
         }
       });
@@ -2342,7 +2540,6 @@ app.post('/api/export-workbook', async (req, res, next) => {
       })
       .parse(req.body);
     const model = body.model;
-    assertValidModel(model);
     const buffer = await exportWorkbook(model);
     const fileName = buildVersionedFormattedName(model.fileName, body.versionNumber ?? 1);
     const savedPath = await saveWorkbookToDesktopFormatted(fileName, buffer);
