@@ -1,97 +1,128 @@
-# QLE Dashboard MVP
+# QLE Dashboard
 
-React + TypeScript dashboard for:
+A workbook-driven dashboard for QLE document intake, editing, review, and engineering handoff.
 
-- opening a formatted QLE workbook for editing
-- formatting an unformatted QLE workbook first, then downloading it for review
-- editing events, enum rows, categories, documents, and validation rules
-- exporting an updated formatted workbook
-- generating a diff and implementation bundle
-- drafting or creating a Jira ticket
+## About
 
-## Workbook Flow
+Internal tool for maintaining QLE upload documents and related implementation bundles.
 
-The dashboard supports two entry paths:
+**Author:** Haripriyaa Ganesan (haripriyaa.ganesan@vimo.com)  
+**Maintainer:** Haripriyaa Ganesan
 
-- `Formatted workbook`: upload the styled workbook and edit it directly in the dashboard
-- `Unformatted workbook`: upload the source workbook, let the dashboard format it, download the formatted copy, review it, and then open the formatted version in the editor
+The app supports both formatted and unformatted workbook flows. Product or operations users can format source workbooks, review highlighted changes, edit events, enums, categories, documents, and validation rules, then export an updated workbook or generate Jira-ready implementation details.
 
-This keeps the editing surface consistent while still supporting raw workbook intake.
+## Stack
 
-## Run
+- Vite + React 18 + TypeScript
+- Express + Node.js
+- ExcelJS for workbook parsing and export
+- Zod for API validation
+- PostgreSQL integration for PM event-name checks
 
-```bash
-PATH=/usr/local/bin:$PATH npm install
-PATH=/usr/local/bin:$PATH npm run dev
-```
+## Getting started
 
-The Vite client runs on `http://localhost:5173` and proxies `/api` to the Express API on `http://localhost:8787`.
-
-## Production Build
+Use Node `22.x` or `20.x`.
 
 ```bash
+npm install
+npm run dev
+npm run typecheck
 npm run build
-npm start
 ```
 
-Production runtime expectations:
+Default local ports:
 
-- client assets build to `dist/client`
-- server code builds to `dist/server`
-- runtime-generated files go under `storage/` by default
-- the Node server serves both the React app and `/api/*`
+- client: `http://localhost:5173`
+- server: `http://localhost:8787`
 
-## Source Layout
+The Vite client proxies `/api` requests to the Express server.
 
-- `frontend/`: Vite React app
-- `backend/`: Express API and server runtime
-- `shared/`: common types and validation used by both
+## Project layout
 
-## Deployment Layout
+This repo is a single app with shared frontend, backend, and workbook logic:
 
-Deployment-oriented folders now included in the repo:
+- `frontend/` — React dashboard UI
+- `backend/` — Express API, workbook import/export, Jira and DB integration
+- `shared/` — shared types, validation, and filename helpers
+- `scripts/` — formatter entrypoints and runtime utilities
+- `config/env/` — environment templates
+- `storage/` — runtime-generated uploads, formatted workbooks, logs, and bundles
+- `docs/` — deployment and orchestration notes
 
-- `config/env/.env.example`: deployment-safe environment template
-- `scripts/`: runtime and utility entrypoints
-- `storage/`: runtime-generated output root
-- `docs/deployment-readiness-plan.md`: deployment rollout plan
+```text
+backend/
+  src/
+    db.ts                 # DB connectivity + PM lookup queries
+    formatterTool.ts      # workbook formatting helpers
+    index.ts              # Express server + API routes
+    qleWorkbook.ts        # workbook import/export + diff logic
+    runtimeConfig.ts      # env-driven runtime configuration
+frontend/
+  src/
+    App.tsx               # main PM dashboard workflow
+    main.tsx
+    styles.css
+    components/app/       # extracted modal, section, and icon components
+shared/
+  fileNames.ts            # workbook naming conventions
+  types.ts                # shared workbook/domain types
+  validation.ts           # workbook validation rules
+config/
+  env/.env.example        # safe environment template
+scripts/
+  qle-formatter.js
+storage/
+  uploads/
+  formatted/
+  bundles/
+  logs/
+```
 
-Copy the example env when setting up a new environment:
+## Workbook flow
+
+The dashboard supports two intake paths:
+
+1. `Formatted workbook`
+   Upload the styled workbook and edit it directly in the app.
+2. `Unformatted workbook`
+   Upload the source workbook, let the app format it, download the formatted copy, and continue editing from the same dashboard workflow.
+
+From there the app can:
+
+- validate required workbook fields
+- preserve and display highlighted workbook changes
+- review change summaries before Jira creation
+- export the latest formatted workbook
+- generate implementation bundles for engineering handoff
+
+## Main scripts
+
+```bash
+npm run dev           # start Vite client + Express server
+npm run dev:client    # start client only
+npm run dev:server    # start server only
+npm run typecheck     # run client + server TypeScript checks
+npm run build         # build client and server output
+npm start             # run the built server from dist/
+```
+
+## Environment setup
+
+Copy the example file before local setup:
 
 ```bash
 cp config/env/.env.example .env
 ```
 
-## Developer Dashboard Prerequisite
+Common runtime settings include:
 
-`Developer Dashboard` now runs the implementation step through Cursor CLI. Install and authenticate `cursor-agent` before using that flow:
+- `PORT`
+- `STORAGE_DIR`
+- `BUNDLES_DIR`
+- `FORMATTED_OUTPUT_DIR`
+- `ENABLE_DEVELOPER_FLOW`
 
-```bash
-curl -fsS https://cursor.com/install | bash
-cursor-agent
-```
-
-## Main Endpoints
-
-- `POST /api/import-workbook`
-- `POST /api/diff`
-- `POST /api/export-workbook`
-- `POST /api/bundles`
-- `POST /api/jira/draft`
-- `POST /api/jira/create`
-
-## Jira Config
-
-Set these env vars before using `POST /api/jira/create`:
-
-- `JIRA_BASE_URL`
-- `JIRA_EMAIL`
-- `JIRA_API_TOKEN`
-- `JIRA_PROJECT_KEY`
-
-## DB Config
-
-Set these env vars before using the read-only DB event-name check:
+DB settings for PM event lookup:
 
 - `DB_HOST`
 - `DB_PORT`
@@ -101,81 +132,73 @@ Set these env vars before using the read-only DB event-name check:
 - `DB_SCHEMA`
 - `DB_SSL`
 
-You can start from `config/env/.env.example`.
+Jira settings:
 
-For local development, copy `config/env/.env.example` to `.env`, fill in the real values, and keep `.env` out of git:
+- `JIRA_BASE_URL`
+- `JIRA_EMAIL`
+- `JIRA_API_TOKEN`
+- `JIRA_PROJECT_KEY`
 
-```bash
-cp config/env/.env.example .env
-```
+## Main endpoints
 
-Common runtime settings:
+- `POST /api/import-workbook`
+- `POST /api/format-unformatted-workbook`
+- `POST /api/export-workbook`
+- `POST /api/diff`
+- `POST /api/bundles`
+- `POST /api/jira/draft`
+- `POST /api/jira/create`
+- `GET /api/db/config`
+- `POST /api/db/config`
 
-```bash
-export NODE_ENV="development"
-export APP_ENV="local"
-export PORT="8787"
-export STORAGE_DIR="./storage"
-export BUNDLES_DIR="./storage/bundles"
-export FORMATTED_OUTPUT_DIR="./storage/formatted"
-export ENABLE_DEVELOPER_FLOW="false"
+## Output and storage
 
-export DB_HOST="your_database_host"
-export DB_PORT="5432"
-export DB_NAME="your_database_name"
-export DB_USER="your_database_user"
-export DB_PASSWORD="your_database_password"
-export DB_SCHEMA="public"
-export DB_SSL="false"
+Runtime-generated files are written under `storage/` by default:
 
-export JIRA_BASE_URL="https://your-jira.example.com"
-export JIRA_EMAIL="team@example.com"
-export JIRA_API_TOKEN="your_jira_api_token"
-export JIRA_PROJECT_KEY="PROJECT"
-```
+- `storage/uploads/` — imported workbook files
+- `storage/formatted/` — exported and formatted workbook output
+- `storage/bundles/` — engineering handoff bundles
+- `storage/logs/` — runtime and developer-flow logs
 
-## Bundle Output
-
-Bundles are written to `storage/bundles/<bundle-id>/` by default and include:
-
-- `qle-update.json`
-- `diff-summary.md`
-- `jira-payload.json`
-- generated formatted workbook
-- `agent-handoff.json`
-
-See the orchestration design in `docs/agent-orchestration.md`.
-
-## Ready For Engineering
-
-Use the `Ready for Engineering` action in the dashboard when you already have a Jira key and want a coordinator-ready handoff package.
-
-It creates a Jira-linked bundle with:
+Bundle output typically includes:
 
 - formatted workbook
 - `qle-update.json`
 - `diff-summary.md`
 - `jira-payload.json`
 - `agent-handoff.json`
-- `READY_FOR_ENGINEERING.md`
+
+## Developer flow
+
+The dashboard includes a developer-oriented handoff flow for packaging workbook changes into implementation bundles and reviewable artifacts.
+
+`Developer Flow` is disabled by default for safer deployments. Enable it only in environments where the local repo path, required skill path, and CLI tooling are intentionally configured.
+
+Relevant settings:
+
+- `ENABLE_DEVELOPER_FLOW`
+- `DEVELOPER_REPO_PATH`
+- `DEVELOPER_SKILL_PATH`
+
+## Production build
+
+```bash
+npm run build
+npm start
+```
+
+Build output:
+
+- client assets: `dist/client`
+- server build: `dist/server`
+
+The Node server serves both the frontend app and `/api/*`.
 
 ## Docker
-
-This repo now includes a production `Dockerfile` and `.dockerignore`.
 
 Typical container flow:
 
 ```bash
 docker build -t qle-dashboard .
 docker run -p 8787:8787 --env-file .env qle-dashboard
-```
-
-## Developer Flow In Production
-
-`Developer Flow` is disabled by default for deployment safety. Enable it only in environments where the local repo path, skill path, and Cursor CLI are intentionally available:
-
-```bash
-export ENABLE_DEVELOPER_FLOW="true"
-export DEVELOPER_REPO_PATH="/absolute/path/to/repo"
-export DEVELOPER_SKILL_PATH="/absolute/path/to/SKILL.md"
 ```
