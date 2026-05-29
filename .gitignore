@@ -10,3 +10,5 @@ storage/*
 artifacts
 playwright-report
 test-results
+.vercel
+.env*

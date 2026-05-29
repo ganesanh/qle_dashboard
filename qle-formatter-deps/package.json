@@ -1,0 +1,1 @@
+{"name":"qle-formatter-deps","version":"1.0.0","private":true,"dependencies":{"exceljs":"^4.4.0","xlsx":"^0.18.5"}}
