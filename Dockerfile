@@ -19,6 +19,8 @@ COPY package.json package-lock.json ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/scripts ./scripts
+COPY --from=build /app/qle-formatter.js ./qle-formatter.js
+COPY --from=build /app/qle-formatter-deps ./qle-formatter-deps
 RUN mkdir -p /app/storage
 EXPOSE 8787
 CMD ["npm", "start"]
