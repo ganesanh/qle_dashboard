@@ -288,6 +288,20 @@ button:disabled {
   color: #fbf7f0;
 }
 
+.event-pill.has-changes {
+  background: rgba(255, 243, 77, 0.45);
+  color: #3d2f00;
+  outline: 2px solid rgba(200, 160, 0, 0.5);
+  outline-offset: -2px;
+}
+
+.event-pill.has-changes.active {
+  background: #2e2a23;
+  color: #fbf7f0;
+  outline: 2px solid rgba(255, 220, 50, 0.7);
+  outline-offset: -2px;
+}
+
 .removed-row {
   background: #fff34d !important;
   color: #201a12 !important;
@@ -1005,6 +1019,41 @@ button:disabled {
   gap: 6px;
 }
 
+/* ── Styled tooltips for icon-only buttons ─────────────────────────────── */
+.field-action-icon[title],
+.enum-row-actions button[title],
+.editor-header .action-row button[title] {
+  position: relative;
+}
+
+.field-action-icon[title]::after,
+.enum-row-actions button[title]::after,
+.editor-header .action-row button[title]::after {
+  content: attr(title);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(28, 28, 28, 0.88);
+  color: #fff;
+  padding: 4px 9px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 300;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+}
+
+.field-action-icon[title]:hover::after,
+.enum-row-actions button[title]:hover::after,
+.editor-header .action-row button[title]:hover::after {
+  opacity: 1;
+}
+
 .field-action-toggle {
   white-space: nowrap;
 }
@@ -1287,6 +1336,20 @@ button:disabled {
 .app-shell.theme-classic .event-pill.active {
   background: #f0b429;
   color: #10212d;
+}
+
+.app-shell.theme-classic .event-pill.has-changes {
+  background: rgba(240, 180, 41, 0.22);
+  color: #183246;
+  outline: 2px solid rgba(240, 180, 41, 0.65);
+  outline-offset: -2px;
+}
+
+.app-shell.theme-classic .event-pill.has-changes.active {
+  background: #f0b429;
+  color: #10212d;
+  outline: 2px solid rgba(200, 140, 10, 0.8);
+  outline-offset: -2px;
 }
 
 .app-shell.theme-classic .ghost {

@@ -21,6 +21,27 @@ import {
 
 type FlowMode = 'pm' | 'developer' | 'agent';
 
+function eventHasChanges(event: QleWorkbookModel['events'][number]): boolean {
+  if (event.isNew || event.isRemoved) return true;
+  const fsChanged = (holder: { fieldStates?: Record<string, { isNew?: boolean; isRemoved?: boolean } | null | undefined> }) =>
+    Object.values(holder.fieldStates ?? {}).some((fs) => fs?.isNew || fs?.isRemoved);
+  if (fsChanged(event)) return true;
+  for (const row of event.enumRows) {
+    if (row.isNew || row.isRemoved || fsChanged(row)) return true;
+  }
+  for (const cat of event.categories) {
+    if (cat.isNew || cat.isRemoved || fsChanged(cat)) return true;
+    for (const doc of cat.documents) {
+      if (doc.isNew || doc.isRemoved || fsChanged(doc)) return true;
+    }
+    for (const item of cat.validationItems ?? []) {
+      if (item.isNew || item.isRemoved) return true;
+      if (Object.values(item.fieldStates ?? {}).some((fs) => fs?.isNew || fs?.isRemoved)) return true;
+    }
+  }
+  return false;
+}
+
 type DeveloperExecutionItem = {
   key?: string;
   label: string;
@@ -358,8 +379,9 @@ export function EventGroupsPanel({
               'event-pill',
               event.id === selectedEventId ? 'active' : '',
               event.isRemoved ? 'removed-row' : '',
+              !event.isRemoved && eventHasChanges(event) ? 'has-changes' : '',
             ].filter(Boolean).join(' ')}
-            title={`Open ${eventLabelById.get(event.id) ?? `Event ${event.eventNumber}`}${event.isRemoved ? ' (removed)' : ''}`}
+            title={`Open ${eventLabelById.get(event.id) ?? `Event ${event.eventNumber}`}${event.isRemoved ? ' (removed)' : eventHasChanges(event) ? ' (has changes)' : ''}`}
             onClick={() => onSelectEvent(event.id)}
           >
             {eventLabelById.get(event.id) ?? `Event ${event.eventNumber}`}

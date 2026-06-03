@@ -423,6 +423,7 @@ function clearWorkbookHighlights(model: QleWorkbookModel): QleWorkbookModel {
   next.events.forEach((event, eventIndex) => {
     event.eventNumber = eventIndex + 1;
     event.isNew = false;
+    event.isRemoved = false;
     event.manualIsNew = null;
     Object.values(event.fieldStates ?? {}).forEach((fieldState) => {
       if (!fieldState) return;
@@ -433,6 +434,7 @@ function clearWorkbookHighlights(model: QleWorkbookModel): QleWorkbookModel {
 
     event.enumRows.forEach((row) => {
       row.isNew = false;
+      row.isRemoved = false;
       row.manualIsNew = null;
       Object.values(row.fieldStates ?? {}).forEach((fieldState) => {
         if (!fieldState) return;
@@ -444,6 +446,7 @@ function clearWorkbookHighlights(model: QleWorkbookModel): QleWorkbookModel {
 
     event.categories.forEach((category) => {
       category.isNew = false;
+      category.isRemoved = false;
       category.manualIsNew = null;
       Object.values(category.fieldStates ?? {}).forEach((fieldState) => {
         if (!fieldState) return;
@@ -467,6 +470,7 @@ function clearWorkbookHighlights(model: QleWorkbookModel): QleWorkbookModel {
       category.documents.forEach((document, documentIndex) => {
         document.sort = documentIndex + 1;
         document.isNew = false;
+        document.isRemoved = false;
         document.manualIsNew = null;
         Object.values(document.fieldStates ?? {}).forEach((fieldState) => {
           if (!fieldState) return;
