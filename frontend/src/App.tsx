@@ -129,6 +129,19 @@ function markEventRemoved(event: QleEvent) {
   });
 }
 
+function unmarkEventRemoved(event: QleEvent) {
+  event.isRemoved = false;
+  event.enumRows.forEach((row) => {
+    row.isRemoved = false;
+  });
+  event.categories.forEach((category) => {
+    category.isRemoved = false;
+    category.documents.forEach((document) => {
+      document.isRemoved = false;
+    });
+  });
+}
+
 function markCategoryRemoved(category: QleCategory) {
   category.isRemoved = true;
   category.documents.forEach((document) => {
@@ -3598,17 +3611,24 @@ export function App() {
               <h2>{eventLabelById.get(selectedEvent.id) ?? `Event ${selectedEvent.eventNumber}`}</h2>
               <div className="action-row">
                 <button
-                  className="ghost danger icon-button"
-                  title="Mark this event as removed in the workbook"
+                  className={selectedEvent.isRemoved ? 'ghost icon-button' : 'ghost danger icon-button'}
+                  title={selectedEvent.isRemoved ? 'Restore this event (unmark as removed)' : 'Mark this event as removed in the workbook'}
+                  aria-label={selectedEvent.isRemoved ? 'Restore this event' : 'Mark this event as removed'}
+                  aria-pressed={Boolean(selectedEvent.isRemoved)}
                   onClick={() =>
                     mutateEdited((draft) => {
                       const event = draft.events.find((item) => item.id === selectedEvent.id);
-                      if (event) markEventRemoved(event);
+                      if (!event) return;
+                      if (event.isRemoved) {
+                        unmarkEventRemoved(event);
+                      } else {
+                        markEventRemoved(event);
+                      }
                     })
                   }
                 >
-                  <RemoveFileIcon />
-                  <span>{selectedEvent.isRemoved ? 'Event Removed' : 'Remove Event'}</span>
+                  {selectedEvent.isRemoved ? <UndoIcon /> : <RemoveFileIcon />}
+                  <span>{selectedEvent.isRemoved ? 'Restore Event' : 'Remove Event'}</span>
                 </button>
                 <button
                   className="ghost icon-button"
@@ -3897,18 +3917,19 @@ export function App() {
                               <NewBadgeIcon />
                             </button>
                             <button
-                              className="ghost danger icon-only-button"
-                              title="Delete this enum row"
-                              aria-label="Delete this enum row"
+                              className={row.isRemoved ? 'ghost icon-only-button' : 'ghost danger icon-only-button'}
+                              title={row.isRemoved ? 'Restore this enum row' : 'Mark this enum row as removed'}
+                              aria-label={row.isRemoved ? 'Restore this enum row' : 'Mark this enum row as removed'}
+                              aria-pressed={Boolean(row.isRemoved)}
                               onClick={() =>
                                 mutateEdited((draft) => {
                                   const event = draft.events.find((item) => item.id === selectedEvent.id);
                                   const target = event?.enumRows.find((item) => item.id === row.id);
-                                  if (target) target.isRemoved = true;
+                                  if (target) target.isRemoved = !target.isRemoved;
                                 })
                               }
                             >
-                              <TrashIcon />
+                              {row.isRemoved ? <UndoIcon /> : <TrashIcon />}
                             </button>
                           </div>
                         </td>

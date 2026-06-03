@@ -937,6 +937,26 @@ export async function importWorkbook(
           itemFlags,
         };
       }
+
+      // Build per-enum removed flags from rich-text line formatting.
+      // If only some enum lines are struck through (e.g. CHANGE_IN_HOUSEHOLD_SIZE inside a
+      // multi-enum cell), only those specific enums should be marked removed — not the whole event.
+      const enumLineRemovedFlags = getLineFlags(rowLineRemoved, 0);
+      const englishLineRemovedFlags = getLineFlags(rowLineRemoved, 1);
+      const spanishLineRemovedFlags = getLineFlags(rowLineRemoved, 2);
+      let itemRemovedFlags: boolean[] = Array(enumRows.length).fill(eventIsRemoved);
+      if (
+        enumRows.length > 1 &&
+        (enumLineRemovedFlags.length > 0 || englishLineRemovedFlags.length > 0 || spanishLineRemovedFlags.length > 0)
+      ) {
+        itemRemovedFlags = enumRows.map((_, index) =>
+          Boolean(enumLineRemovedFlags[index]) ||
+          Boolean(englishLineRemovedFlags[index]) ||
+          Boolean(spanishLineRemovedFlags[index]),
+        );
+      }
+      const allEnumsRemoved = itemRemovedFlags.every(Boolean);
+
       currentEvent = {
         id: randomUUID(),
         eventNumber: events.length + 1,
@@ -946,9 +966,9 @@ export async function importWorkbook(
           en: englishRows[index] ?? englishRows[englishRows.length - 1] ?? '',
           es: spanishRows[index] ?? spanishRows[spanishRows.length - 1] ?? '',
           fieldStates: buildFieldStates({
-            enum: { isNew: eventFlags.itemFlags[index], isRemoved: eventIsRemoved },
-            en: { isNew: eventFlags.itemFlags[index], isRemoved: eventIsRemoved },
-            es: { isNew: eventFlags.itemFlags[index], isRemoved: eventIsRemoved },
+            enum: { isNew: eventFlags.itemFlags[index], isRemoved: itemRemovedFlags[index] },
+            en: { isNew: eventFlags.itemFlags[index], isRemoved: itemRemovedFlags[index] },
+            es: { isNew: eventFlags.itemFlags[index], isRemoved: itemRemovedFlags[index] },
           }),
           isNew: eventFlags.itemFlags[index] ?? false,
           manualIsNew: null,
@@ -961,7 +981,7 @@ export async function importWorkbook(
         }),
         isNew: eventFlags.rowIsNew,
         manualIsNew: null,
-        isRemoved: eventIsRemoved,
+        isRemoved: allEnumsRemoved,
         categories: [],
       };
       events.push(currentEvent);

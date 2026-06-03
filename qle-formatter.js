@@ -461,6 +461,43 @@ function buildCellLineNewFlags(cell) {
   return Array.from({ length: splitCount }, () => cellSignalsNew(cell));
 }
 
+function buildCellLineRemovedFlags(cell) {
+  const pushLine = (flags, text, isRemoved) => {
+    if (text.trim()) flags.push(isRemoved);
+  };
+
+  if (Array.isArray(cell?.value?.richText)) {
+    const flags = [];
+    let currentText = '';
+    let currentIsRemoved = false;
+
+    for (const part of cell.value.richText) {
+      const text = part?.text ?? '';
+      const partIsRemoved = Boolean(part?.font?.strike);
+      const segments = text.split('\n');
+      segments.forEach((segment, index) => {
+        if (segment) {
+          currentText += segment;
+          currentIsRemoved = currentIsRemoved || partIsRemoved;
+        }
+        if (index < segments.length - 1) {
+          pushLine(flags, currentText, currentIsRemoved);
+          currentText = '';
+          currentIsRemoved = false;
+        }
+      });
+    }
+
+    pushLine(flags, currentText, currentIsRemoved);
+    return flags;
+  }
+
+  const text = getCellText(cell);
+  if (!text) return [];
+  const splitCount = splitLabels(text).length;
+  return Array.from({ length: splitCount }, () => cellSignalsRemoved(cell));
+}
+
 function buildInputRows(ws) {
   let maxCol = 0;
   ws.eachRow({ includeEmpty: false }, (row) => {
@@ -473,12 +510,14 @@ function buildInputRows(ws) {
   const styleRows = [];
   const removedStyleRows = [];
   const lineStyleRows = [];
+  const lineRemovedRows = [];
   for (let ri = 1; ri <= ws.rowCount; ri++) {
     const row = ws.getRow(ri);
     const values = Array(maxCol).fill(null);
     const styles = Array(maxCol).fill(false);
     const removedStyles = Array(maxCol).fill(false);
     const lineStyles = Array.from({ length: maxCol }, () => []);
+    const lineRemoved = Array.from({ length: maxCol }, () => []);
     for (let ci = 1; ci <= maxCol; ci++) {
       const cell = row.getCell(ci);
       const isMergedChild =
@@ -490,13 +529,15 @@ function buildInputRows(ws) {
       styles[ci - 1] = isMergedChild ? false : cellSignalsNew(cell);
       removedStyles[ci - 1] = isMergedChild ? false : cellSignalsRemoved(cell);
       lineStyles[ci - 1] = isMergedChild ? [] : buildCellLineNewFlags(cell);
+      lineRemoved[ci - 1] = isMergedChild ? [] : buildCellLineRemovedFlags(cell);
     }
     rows.push(values);
     styleRows.push(styles);
     removedStyleRows.push(removedStyles);
     lineStyleRows.push(lineStyles);
+    lineRemovedRows.push(lineRemoved);
   }
-  return { rows, styleRows, removedStyleRows, lineStyleRows };
+  return { rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows };
 }
 
 function isProcessableWorkbook(filePath) {
@@ -620,7 +661,7 @@ function buildColMap(rows) {
   return { map, dataStart: hdrIdx >= 0 ? hdrIdx + 1 : 0 };
 }
 
-function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows) {
+function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows) {
   const { map, dataStart } = buildColMap(rows);
   console.log(
     `  ${T.grey}Col map: ${Object.entries(map)
@@ -663,6 +704,7 @@ function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows) {
     const rowStyles = styleRows?.[i] ?? [];
     const rowRemovedStyles = removedStyleRows?.[i] ?? [];
     const rowLineStyles = lineStyleRows?.[i] ?? [];
+    const rowLineRemoved = lineRemovedRows?.[i] ?? [];
     const eventIsHighlighted = hasNew(rowStyles, [0, 1, 2, 3, 4]);
     const eventInstructionsAreHighlighted = hasNew(rowStyles, [3, 4]);
     const categoryIsHighlighted = hasNew(rowStyles, [5, 6, 7, 12]);
@@ -712,18 +754,39 @@ function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows) {
           itemFlags,
         };
       }
+
+      // Build per-enum removed flags from rich-text line formatting.
+      // If only some enum lines are struck through, only those specific enums
+      // should be marked removed — not the whole event group.
+      const enumLineRemovedFlags = getLineFlags(rowLineRemoved, 0);
+      const englishLineRemovedFlags = getLineFlags(rowLineRemoved, 1);
+      const spanishLineRemovedFlags = getLineFlags(rowLineRemoved, 2);
+      let itemRemovedFlags = Array(enums.length).fill(eventIsRemoved);
+      if (
+        enums.length > 1 &&
+        (enumLineRemovedFlags.length > 0 || englishLineRemovedFlags.length > 0 || spanishLineRemovedFlags.length > 0)
+      ) {
+        itemRemovedFlags = enums.map((_, index) =>
+          Boolean(enumLineRemovedFlags[index]) ||
+          Boolean(englishLineRemovedFlags[index]) ||
+          Boolean(spanishLineRemovedFlags[index]),
+        );
+      }
+      const allEnumsRemoved = itemRemovedFlags.every(Boolean);
+
       evt = {
         enumRows: enums.map((e, i) => ({
           enum: e,
           en: en[i] ?? en[en.length - 1] ?? '',
           es: es[i] ?? es[es.length - 1] ?? '',
           isNew: eventFlags.itemFlags[i] ?? false,
+          isRemoved: itemRemovedFlags[i] ?? false,
         })),
         what: whatEn ?? '',
         whatEs: whatEs ?? '',
         categories: [],
         rowIsNew: eventFlags.rowIsNew,
-        isRemoved: eventIsRemoved,
+        isRemoved: allEnumsRemoved,
       };
       events.push(evt);
       cat = null;
@@ -1102,10 +1165,10 @@ async function loadEvents(absInput, ExcelJS) {
   await wb.xlsx.readFile(absInput, READ_XLSX_OPTS);
   const name = findSheetName(wb);
   const ws = wb.getWorksheet(name);
-  const { rows, styleRows, removedStyleRows, lineStyleRows } = buildInputRows(ws);
+  const { rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows } = buildInputRows(ws);
   console.log(`  ${T.grey}Sheet: "${name}"${T.reset}`);
 
-  return parseSheet(rows, styleRows, removedStyleRows, lineStyleRows);
+  return parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows);
 }
 
 function applyNewFlags(events, manualNums) {
