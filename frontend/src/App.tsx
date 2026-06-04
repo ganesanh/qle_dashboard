@@ -149,6 +149,13 @@ function markCategoryRemoved(category: QleCategory) {
   });
 }
 
+function unmarkCategoryRemoved(category: QleCategory) {
+  category.isRemoved = false;
+  category.documents.forEach((document) => {
+    document.isRemoved = false;
+  });
+}
+
 function createEmptyCategory(): QleCategory {
   return {
     id: crypto.randomUUID(),
@@ -4069,19 +4076,43 @@ export function App() {
                     <div key={category.id} className={category.isRemoved ? 'category-card removed-row' : 'category-card'}>
                       <div className="panel-header">
                         <strong>{category.enum || 'New category'}{category.isRemoved ? ' - Removed' : ''}</strong>
-                        <button
-                          className="ghost danger icon-only-button"
-                          title="Mark this category and its documents as removed"
-                          onClick={() =>
-                            mutateEdited((draft) => {
-                              const event = draft.events.find((item) => item.id === selectedEvent.id);
-                              const target = event?.categories.find((item) => item.id === category.id);
-                              if (target) markCategoryRemoved(target);
-                            })
-                          }
-                        >
-                          <RemoveFileIcon />
-                        </button>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <button
+                            className={category.isRemoved ? 'ghost icon-only-button' : 'ghost danger icon-only-button'}
+                            title={category.isRemoved ? 'Restore this category and its documents' : 'Mark this category and its documents as removed'}
+                            aria-label={category.isRemoved ? 'Restore category' : 'Mark category as removed'}
+                            aria-pressed={Boolean(category.isRemoved)}
+                            onClick={() =>
+                              mutateEdited((draft) => {
+                                const event = draft.events.find((item) => item.id === selectedEvent.id);
+                                const target = event?.categories.find((item) => item.id === category.id);
+                                if (!target) return;
+                                if (target.isRemoved) {
+                                  unmarkCategoryRemoved(target);
+                                } else {
+                                  markCategoryRemoved(target);
+                                }
+                              })
+                            }
+                          >
+                            {category.isRemoved ? <UndoIcon /> : <RemoveFileIcon />}
+                          </button>
+                          <button
+                            className="ghost danger icon-only-button"
+                            title="Permanently delete this entire category, its documents, and all labels"
+                            aria-label="Delete entire category"
+                            onClick={() =>
+                              mutateEdited((draft) => {
+                                const event = draft.events.find((item) => item.id === selectedEvent.id);
+                                if (event) {
+                                  event.categories = event.categories.filter((item) => item.id !== category.id);
+                                }
+                              })
+                            }
+                          >
+                            <TrashIcon />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="category-field-stack">
