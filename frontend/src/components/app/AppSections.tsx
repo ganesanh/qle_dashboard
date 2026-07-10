@@ -15,7 +15,6 @@ import {
   CopyIcon,
   DownloadIcon,
   GearIcon,
-  PlusIcon,
   SpinnerIcon,
 } from './AppIcons';
 
@@ -55,11 +54,9 @@ type SidebarRailProps = {
   hasWorkbook: boolean;
   busy: boolean;
   hasUnsavedChanges: boolean;
-  theme: 'classic' | 'soft';
   onToggleSidebar: () => void;
   onSelectFlow: (flow: 'pm' | 'developer') => void;
   onDownload: () => void;
-  onToggleTheme: () => void;
 };
 
 type WorkbookUploadCardProps = {
@@ -229,11 +226,9 @@ export function SidebarRail({
   hasWorkbook,
   busy,
   hasUnsavedChanges,
-  theme,
   onToggleSidebar,
   onSelectFlow,
   onDownload,
-  onToggleTheme,
 }: SidebarRailProps) {
   return (
     <aside className="sidebar-shell">
@@ -276,15 +271,6 @@ export function SidebarRail({
             {sidebarExpanded ? <span>Download</span> : null}
           </button>
         ) : null}
-        <button
-          type="button"
-          className="rail-nav rail-theme"
-          onClick={onToggleTheme}
-          title="Switch theme"
-        >
-          <PlusIcon />
-          {sidebarExpanded ? <span>{theme === 'classic' ? 'Soft Theme' : 'Classic Theme'}</span> : null}
-        </button>
       </nav>
     </aside>
   );

@@ -377,9 +377,10 @@ function syncDerivedNewFlags(model: QleWorkbookModel, baseline: QleWorkbookModel
       const baselineRow = baselineIndex.enumRows.get(row.id);
       const rowAdded = !baselineRow || Boolean(baselineRow.isNew);
       row.isNew = row.manualIsNew ?? rowAdded;
-      syncScalarFieldState(row, 'enum', row.enum, baselineRow?.enum, rowAdded);
-      syncScalarFieldState(row, 'en', row.en, baselineRow?.en, rowAdded);
-      syncScalarFieldState(row, 'es', row.es, baselineRow?.es, rowAdded);
+      const rowIsNew = Boolean(row.isNew);
+      syncScalarFieldState(row, 'enum', row.enum, baselineRow?.enum, rowIsNew);
+      syncScalarFieldState(row, 'en', row.en, baselineRow?.en, rowIsNew);
+      syncScalarFieldState(row, 'es', row.es, baselineRow?.es, rowIsNew);
     });
 
     event.categories.forEach((category) => {
@@ -416,9 +417,12 @@ function syncDerivedNewFlags(model: QleWorkbookModel, baseline: QleWorkbookModel
         const baselineDocument = baselineIndex.documents.get(document.id);
         const documentAdded = !baselineDocument || Boolean(baselineDocument.isNew);
         document.isNew = document.manualIsNew ?? documentAdded;
-        syncScalarFieldState(document, 'enum', document.enum, baselineDocument?.enum, documentAdded);
-        syncScalarFieldState(document, 'en', document.en, baselineDocument?.en, documentAdded);
-        syncScalarFieldState(document, 'es', document.es, baselineDocument?.es, documentAdded);
+        // Use document.isNew (which respects manualIsNew) so that manually marking a
+        // document as new also highlights its individual fields.
+        const documentIsNew = Boolean(document.isNew);
+        syncScalarFieldState(document, 'enum', document.enum, baselineDocument?.enum, documentIsNew);
+        syncScalarFieldState(document, 'en', document.en, baselineDocument?.en, documentIsNew);
+        syncScalarFieldState(document, 'es', document.es, baselineDocument?.es, documentIsNew);
       });
     });
   });
@@ -2171,7 +2175,6 @@ export function App() {
     return stored === 'developer' ? 'developer' : 'pm';
   });
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
-  const [theme, setTheme] = useState<'classic' | 'soft'>('classic');
   const [pmWorkspaceCollapsed, setPmWorkspaceCollapsed] = useState(false);
   const [developerWorkspaceCollapsed, setDeveloperWorkspaceCollapsed] = useState(false);
   const [developerJiraKey, setDeveloperJiraKey] = useState('');
@@ -2373,9 +2376,9 @@ export function App() {
         const currentY = window.scrollY;
         const delta = currentY - lastScrollYRef.current;
         if (!pmWorkspaceCollapsed) {
-          if (delta > 18 && currentY > 180) {
+          if (delta > 8 && currentY > 60) {
             if (collapseAnchorRef.current === 0) collapseAnchorRef.current = currentY;
-            if (currentY - collapseAnchorRef.current > 72) {
+            if (currentY - collapseAnchorRef.current > 40) {
               setPmWorkspaceCollapsed(true);
               expandAnchorRef.current = currentY;
               collapseAnchorRef.current = 0;
@@ -2384,13 +2387,13 @@ export function App() {
             collapseAnchorRef.current = 0;
           }
         } else {
-          if (currentY < 120) {
+          if (currentY < 40) {
             setPmWorkspaceCollapsed(false);
             collapseAnchorRef.current = currentY;
             expandAnchorRef.current = 0;
-          } else if (delta < -18) {
+          } else if (delta < -8) {
             if (expandAnchorRef.current === 0) expandAnchorRef.current = currentY;
-            if (expandAnchorRef.current - currentY > 96) {
+            if (expandAnchorRef.current - currentY > 60) {
               setPmWorkspaceCollapsed(false);
               collapseAnchorRef.current = currentY;
               expandAnchorRef.current = 0;
@@ -3518,18 +3521,16 @@ export function App() {
   }
 
   return (
-    <div className={`app-shell theme-${theme} ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`}>
+    <div className={`app-shell ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`}>
       <SidebarRail
         activeFlow={activeFlow}
         sidebarExpanded={sidebarExpanded}
         hasWorkbook={Boolean(edited)}
         busy={busy}
         hasUnsavedChanges={hasUnsavedChanges}
-        theme={theme}
         onToggleSidebar={() => setSidebarExpanded((current) => !current)}
         onSelectFlow={(flow) => setActiveFlow(flow)}
         onDownload={() => void handleSaveWorkbook()}
-        onToggleTheme={() => setTheme((current) => (current === 'classic' ? 'soft' : 'classic'))}
       />
 
       <main className="main-pane">
@@ -4076,11 +4077,10 @@ export function App() {
                     <div key={category.id} className={category.isRemoved ? 'category-card removed-row' : 'category-card'}>
                       <div className="panel-header">
                         <strong>{category.enum || 'New category'}{category.isRemoved ? ' - Removed' : ''}</strong>
-                        <div style={{ display: 'flex', gap: '4px' }}>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                           <button
-                            className={category.isRemoved ? 'ghost icon-only-button' : 'ghost danger icon-only-button'}
+                            className={category.isRemoved ? 'ghost icon-button' : 'ghost danger icon-button'}
                             title={category.isRemoved ? 'Restore this category and its documents' : 'Mark this category and its documents as removed'}
-                            aria-label={category.isRemoved ? 'Restore category' : 'Mark category as removed'}
                             aria-pressed={Boolean(category.isRemoved)}
                             onClick={() =>
                               mutateEdited((draft) => {
@@ -4096,11 +4096,11 @@ export function App() {
                             }
                           >
                             {category.isRemoved ? <UndoIcon /> : <RemoveFileIcon />}
+                            <span>{category.isRemoved ? 'Restore' : 'Remove'}</span>
                           </button>
                           <button
-                            className="ghost danger icon-only-button"
-                            title="Permanently delete this entire category, its documents, and all labels"
-                            aria-label="Delete entire category"
+                            className="ghost danger icon-button"
+                            title="Permanently delete this entire category — enum, labels, validation rules, all documents and their labels"
                             onClick={() =>
                               mutateEdited((draft) => {
                                 const event = draft.events.find((item) => item.id === selectedEvent.id);
@@ -4111,6 +4111,7 @@ export function App() {
                             }
                           >
                             <TrashIcon />
+                            <span>Delete Category</span>
                           </button>
                         </div>
                       </div>
