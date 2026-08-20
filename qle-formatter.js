@@ -661,6 +661,168 @@ function buildColMap(rows) {
   return { map, dataStart: hdrIdx >= 0 ? hdrIdx + 1 : 0 };
 }
 
+function cleanValue(value) {
+  return value != null ? normalise(String(value)).trim() : '';
+}
+
+function findFormattedHeaderIndex(rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+      .slice(0, 6)
+      .map((value) => cleanValue(value).toLowerCase().replace(/\s+/g, ' '));
+    if (
+      row[0] === 'field' &&
+      row[1] === 'enum' &&
+      row[2] === 'english label' &&
+      row[3] === 'spanish label' &&
+      row[4] === 'validation rules' &&
+      row[5] === '#'
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function parseFormattedSheet(rows, styleRows, removedStyleRows) {
+  const headerIndex = findFormattedHeaderIndex(rows);
+  if (headerIndex < 0) return [];
+
+  console.log(`  ${T.grey}Source shape: formatted hierarchy${T.reset}`);
+
+  const events = [];
+  let evt = null,
+    cat = null,
+    lastDoc = null;
+
+  const rowHasNew = (styles, indexes) =>
+    indexes.some((index) => styles?.[index] === true);
+  const rowHasRemoved = (styles, indexes) =>
+    indexes.some((index) => styles?.[index] === true);
+
+  for (let i = headerIndex + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const styles = styleRows?.[i] ?? [];
+    const removedStyles = removedStyleRows?.[i] ?? [];
+    const field = cleanValue(row[0]);
+    const fieldKey = field.toUpperCase();
+    const enumValue = cleanValue(row[1]);
+    const enValue = cleanValue(row[2]);
+    const esValue = cleanValue(row[3]);
+    const validationValue = cleanValue(row[4]);
+    const sortValue = row[5];
+
+    if (
+      fieldKey.startsWith('EVENT GROUP ') ||
+      fieldKey.startsWith('EVENT ') ||
+      fieldKey.startsWith('GROUP ')
+    ) {
+      const isRemoved = removedStyles.some(Boolean);
+      evt = {
+        enumRows: [],
+        what: '',
+        whatEs: '',
+        categories: [],
+        rowIsNew: styles.some(Boolean) && !isRemoved,
+        isRemoved,
+      };
+      events.push(evt);
+      cat = null;
+      lastDoc = null;
+      continue;
+    }
+
+    if (!evt) continue;
+
+    if (fieldKey === 'ENUM') {
+      const enums = splitEnums(enumValue);
+      const en = splitLabels(enValue);
+      const es = splitLabels(esValue);
+      const isRemoved = rowHasRemoved(removedStyles, [1, 2, 3]);
+      const isNew = rowHasNew(styles, [1, 2, 3]) && !isRemoved;
+      evt.enumRows.push(
+        ...enums.map((value, index) => ({
+          enum: value,
+          en: en[index] ?? en[en.length - 1] ?? '',
+          es: es[index] ?? es[es.length - 1] ?? '',
+          isNew,
+          isRemoved,
+        })),
+      );
+      if (isNew && enums.length === 1) evt.rowIsNew = evt.enumRows.length === 1;
+      continue;
+    }
+
+    if (fieldKey === 'INSTRUCTIONS') {
+      const isRemoved = rowHasRemoved(removedStyles, [2, 3]);
+      const isNew = rowHasNew(styles, [2, 3]) && !isRemoved;
+      evt.what = enValue;
+      evt.whatEs = esValue;
+      if (isNew) evt.rowIsNew = true;
+      if (isRemoved) evt.isRemoved = true;
+      continue;
+    }
+
+    if (fieldKey === 'CATEGORY') {
+      const isRemoved =
+        evt.isRemoved || rowHasRemoved(removedStyles, [0, 1, 2, 3, 4]);
+      cat = {
+        enum: enumValue,
+        en: enValue,
+        es: esValue,
+        validation: validationValue,
+        documents: [],
+        isRemoved,
+        isNew: rowHasNew(styles, [0, 1, 2, 3, 4]) && !isRemoved,
+      };
+      evt.categories.push(cat);
+      lastDoc = null;
+      continue;
+    }
+
+    if (fieldKey === 'DOC' && cat) {
+      const parsedDocs = splitDocs(enumValue, enValue, esValue, sortValue);
+      const isRemoved =
+        evt.isRemoved || cat.isRemoved || rowHasRemoved(removedStyles, [1, 2, 3, 5]);
+      const docFlags =
+        evt.rowIsNew || cat.isNew
+          ? promoteAllFlags(
+              buildSplitNewFlags(
+                parsedDocs.length,
+                rowHasNew(styles, [1, 2, 3, 5]) && !isRemoved,
+              ),
+            )
+          : buildSplitNewFlags(
+              parsedDocs.length,
+              rowHasNew(styles, [1, 2, 3, 5]) && !isRemoved,
+            );
+      const docs = parsedDocs.map((doc, index) => ({
+        ...doc,
+        isRemoved,
+        isNew: (docFlags.itemFlags[index] ?? false) && !isRemoved,
+      }));
+      cat.documents.push(...docs);
+      lastDoc = docs[docs.length - 1] ?? lastDoc;
+      continue;
+    }
+
+    if (!field && cat && lastDoc && (enValue || esValue)) {
+      if (enValue) lastDoc.en = lastDoc.en ? `${lastDoc.en}\n${enValue}` : enValue;
+      if (esValue) lastDoc.es = lastDoc.es ? `${lastDoc.es}\n${esValue}` : esValue;
+      if (rowHasNew(styles, [2, 3])) lastDoc.isNew = true;
+      if (rowHasRemoved(removedStyles, [2, 3])) lastDoc.isRemoved = true;
+    }
+  }
+
+  events.forEach((event) => {
+    if (event.enumRows.length > 0 && event.enumRows.every((row) => row.isRemoved)) {
+      event.isRemoved = true;
+    }
+  });
+
+  return normalizeDocumentSorts(events);
+}
+
 function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows) {
   const { map, dataStart } = buildColMap(rows);
   console.log(
@@ -1167,6 +1329,10 @@ async function loadEvents(absInput, ExcelJS) {
   const ws = wb.getWorksheet(name);
   const { rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows } = buildInputRows(ws);
   console.log(`  ${T.grey}Sheet: "${name}"${T.reset}`);
+
+  if (findFormattedHeaderIndex(rows) >= 0) {
+    return parseFormattedSheet(rows, styleRows, removedStyleRows);
+  }
 
   return parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows);
 }
