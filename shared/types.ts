@@ -205,6 +205,8 @@ export type DeveloperStageResult = {
   workbookPath: string;
   previewStateCode: string | null;
   branchName: string;
+  baseBranch: string;
+  baseRef: string;
   worktreePath: string;
   handoffFile: string;
   launchGuide: string;

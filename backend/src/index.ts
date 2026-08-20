@@ -61,6 +61,8 @@ const upload = multer({ storage: multer.memoryStorage() });
 const app = express();
 const developerFlowRuns = new Map<string, DeveloperFlowStatus>();
 const developerFlowRunStage = new Map<string, DeveloperStageResult>();
+const developerBaseBranch = 'master';
+const developerBaseRemoteRef = `origin/${developerBaseBranch}`;
 let activePreviewProcess:
   | {
       pid: number;
@@ -123,7 +125,7 @@ function createDeveloperFlowSteps(): DeveloperFlowExecutionStep[] {
       key: 'requestIntake',
       label: 'Request intake',
       state: 'Ready',
-      detail: 'Jira key and workbook are ready.',
+      detail: 'Waiting for the user to provide the Jira key and workbook document.',
     },
     {
       key: 'jiraAndWorkbook',
@@ -135,7 +137,7 @@ function createDeveloperFlowSteps(): DeveloperFlowExecutionStep[] {
       key: 'createBranch',
       label: 'Create branch',
       state: 'Idle',
-      detail: 'Waiting to prepare an isolated worktree for implementation.',
+      detail: `Waiting to create an isolated implementation branch from ${developerBaseBranch}.`,
     },
     {
       key: 'skillRun',
@@ -366,13 +368,9 @@ async function cleanupDeveloperWorktrees(branchName: string, nextWorktreePath: s
 }
 
 async function resolveDeveloperBaseRef(): Promise<string> {
-  const candidates = ['refs/remotes/origin/master', 'refs/heads/master', 'HEAD'];
+  const candidates = [`refs/remotes/${developerBaseRemoteRef}`, `refs/heads/${developerBaseBranch}`];
 
   for (const candidate of candidates) {
-    if (candidate === 'HEAD') {
-      return candidate;
-    }
-
     const result = await runCommand('git', ['-C', developerRepoPath, 'show-ref', '--verify', candidate], {
       cwd: developerRepoPath,
     });
@@ -381,7 +379,9 @@ async function resolveDeveloperBaseRef(): Promise<string> {
     }
   }
 
-  return 'HEAD';
+  throw new Error(
+    `Developer Flow could not find ${developerBaseRemoteRef} or local ${developerBaseBranch}. Fetch or create ${developerBaseBranch} before starting the implementation branch.`,
+  );
 }
 
 function buildStateI18nRule(previewStateCode: string | null) {
@@ -642,17 +642,9 @@ async function buildDeveloperPrCreateUrl(
     return null;
   }
 
-  const baseBranchResult = await runCommand(
-    'git',
-    ['-C', developerRepoPath, 'symbolic-ref', 'refs/remotes/origin/HEAD'],
-    { cwd: developerRepoPath },
-  );
-  const baseBranch = baseBranchResult.code === 0
-    ? baseBranchResult.stdout.trim().split('/').pop() || 'master'
-    : 'master';
   const params = new URLSearchParams({
     source: branchName,
-    dest: `${repoSlug}::${baseBranch}`,
+    dest: `${repoSlug}::${developerBaseBranch}`,
     event_source: 'branch_detail',
   });
 
@@ -1249,6 +1241,8 @@ async function createDeveloperStagePackage(args: {
         jiraKey: args.jiraKey,
         previewStateCode,
         branchName,
+        baseBranch: developerBaseBranch,
+        baseRef: developerBaseRemoteRef,
         workbookName,
         workbookPath,
         worktreePath,
@@ -1262,8 +1256,9 @@ async function createDeveloperStagePackage(args: {
         prSummaryErrorLog,
         skillPath,
         expectedFlow: [
+          'Prompt user for Jira key and workbook document',
+          `Create branch from ${developerBaseBranch}`,
           'Read Jira and workbook context',
-          'Create branch',
           'Run formatted QLE skill',
           'Open changes for user verification',
           'Commit and push after approval',
@@ -1281,6 +1276,8 @@ async function createDeveloperStagePackage(args: {
       `Jira: ${args.jiraKey}`,
       `Preview state: ${previewStateCode ?? 'unknown'}`,
       `Branch: ${branchName}`,
+      `Base branch: ${developerBaseBranch}`,
+      `Base ref: ${developerBaseRemoteRef}`,
       `Worktree: ${worktreePath}`,
       `Workbook: ${workbookPath}`,
       `Cursor output log: ${cursorOutputLog}`,
@@ -1310,6 +1307,8 @@ async function createDeveloperStagePackage(args: {
     workbookPath,
     previewStateCode,
     branchName,
+    baseBranch: developerBaseBranch,
+    baseRef: developerBaseRemoteRef,
     worktreePath,
     handoffFile,
     launchGuide,
@@ -1375,14 +1374,14 @@ async function executeDeveloperFlow(runId: string, stage: DeveloperStageResult) 
       runId,
       'createBranch',
       'Running',
-      'Creating the isolated branch/worktree for implementation.',
+      `Creating the isolated implementation branch from ${developerBaseBranch}.`,
     );
 
     setDeveloperFlowStep(
       runId,
       'createBranch',
       'Running',
-      `Preparing isolated worktree for ${stage.branchName} so your main repo stays untouched.`,
+      `Preparing isolated worktree for ${stage.branchName} from ${stage.baseRef} so your main repo stays untouched.`,
     );
     await appendDeveloperLog(stage.cursorOutputLog, `Preparing isolated worktree ${stage.worktreePath}.`);
     await cleanupDeveloperWorktrees(stage.branchName, stage.worktreePath);
@@ -1407,7 +1406,7 @@ async function executeDeveloperFlow(runId: string, stage: DeveloperStageResult) 
       runId,
       'createBranch',
       'Completed',
-      `Branch ${stage.branchName} is ready in ${stage.worktreePath}${branchCheck.code === 0 ? '.' : ` from ${baseRef}.`}`,
+      `Branch ${stage.branchName} is ready in ${stage.worktreePath}${branchCheck.code === 0 ? '.' : ` from ${stage.baseBranch}.`}`,
     );
     await appendDeveloperLog(stage.cursorOutputLog, `Branch ${stage.branchName} is ready.`);
     await writeDeveloperPreviewMock(stage);
@@ -1426,6 +1425,7 @@ async function executeDeveloperFlow(runId: string, stage: DeveloperStageResult) 
       `Read and follow the skill instructions in ${developerSkillPath}.`,
       `Use the workbook at ${stage.workbookPath} as the implementation source of truth for the requested changes.`,
       `Use Jira ${stage.jiraKey} only as ticket context and branch/commit reference for this run.`,
+      `The implementation branch was created from ${stage.baseBranch}; keep the diff scoped against ${stage.baseBranch}.`,
       i18nRule,
       'Implement only the Jira/workbook-requested deltas.',
       'Do not make opportunistic cleanup edits, wording tweaks, spacing fixes, copy corrections, or unrelated i18n changes.',

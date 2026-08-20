@@ -677,7 +677,7 @@ export function DeveloperDashboard({
           <div className="flow-hero">
             <div className="sidebar-brow">Developer Dashboard</div>
             <h2>Implementation Intake</h2>
-            <p>Start from the Jira and workbook, then hand the request into the QLE skill workflow for code changes and review.</p>
+            <p>Start from the Jira and workbook, then create the implementation branch from master and hand the request into the QLE skill workflow.</p>
           </div>
           <button
             className="icon-only-button developer-collapse-button"
@@ -729,7 +729,7 @@ export function DeveloperDashboard({
               <div className="pm-action-copy">
                 <div className="section-label">Next Step</div>
                 <h3>Run Implementation Flow</h3>
-                <p>Use Jira plus the reviewed workbook to start the implementation workflow, then verify both the generated diff and the isolated preview before commit and push.</p>
+                <p>Use Jira plus the reviewed workbook to start the implementation workflow. After both are provided, the workflow creates the implementation branch from master, then runs the skill.</p>
               </div>
               <div className="pm-action-group">
                 <button
@@ -751,8 +751,9 @@ export function DeveloperDashboard({
                   <h3>Planned actions</h3>
                 </div>
                 <ul className="plain-list">
+                  <li>Confirm the user-provided Jira key and workbook document.</li>
+                  <li>Create a working branch from master for the implementation.</li>
                   <li>Read the Jira request and attachment.</li>
-                  <li>Create a working branch for the implementation.</li>
                   <li>Run the formatted QLE skill with the workbook context.</li>
                   <li>Start a preview server from the isolated worktree for visual verification.</li>
                   <li>Open changes for user verification before commit and push.</li>
@@ -771,6 +772,10 @@ export function DeveloperDashboard({
                   <div>
                     <strong>Branch preview</strong>
                     <span>{developerJiraKey ? `cursor/${developerJiraKey.toLowerCase()}-qle-update` : 'cursor/jira-key-qle-update'}</span>
+                  </div>
+                  <div>
+                    <strong>Base branch</strong>
+                    <span>{developerStageResult?.baseBranch || 'master'}</span>
                   </div>
                   <div>
                     <strong>Workbook source</strong>
