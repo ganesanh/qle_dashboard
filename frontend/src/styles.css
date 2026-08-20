@@ -729,6 +729,29 @@ button:disabled {
   margin-bottom: 14px;
 }
 
+.required-fields-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.validation-copy-button {
+  min-width: 34px;
+  height: 34px;
+  padding: 8px;
+  border: 1px solid rgba(146, 124, 89, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #5c5347;
+  cursor: pointer;
+}
+
+.validation-copy-button:hover {
+  background: #ffffff;
+  color: #26241f;
+}
+
 .required-fields-header h3,
 .required-fields-header p {
   margin: 0;

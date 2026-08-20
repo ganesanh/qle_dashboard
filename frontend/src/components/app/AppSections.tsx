@@ -108,6 +108,7 @@ type WorkflowInsightsProps = {
   validationIssues: ValidationIssue[];
   dbCheck: DbEventCheckResult | null;
   onSelectValidationIssue?: (issue: ValidationIssue) => void;
+  onCopyText?: (value: string, successMessage: string) => Promise<void>;
 };
 
 type SaveBannerProps = {
@@ -463,10 +464,14 @@ export function WorkflowInsights({
   validationIssues,
   dbCheck,
   onSelectValidationIssue,
+  onCopyText,
 }: WorkflowInsightsProps) {
   if (!diff && validationIssues.length === 0 && !dbCheck) {
     return null;
   }
+  const validationCopyText = validationIssues
+    .map((issue, index) => `${index + 1}. ${issue.message}`)
+    .join('\n');
 
   return (
     <div className="workflow-grid">
@@ -486,8 +491,28 @@ export function WorkflowInsights({
       {validationIssues.length > 0 ? (
         <div className="panel required-fields-panel">
           <div className="required-fields-header">
-            <div className="section-label">Validation</div>
-            <h3>Required Fields</h3>
+            <div className="required-fields-heading-row">
+              <div>
+                <div className="section-label">Validation</div>
+                <h3>Required Fields</h3>
+              </div>
+              {onCopyText ? (
+                <button
+                  type="button"
+                  className="icon-button validation-copy-button"
+                  title="Copy validation errors"
+                  aria-label="Copy validation errors"
+                  onClick={() =>
+                    void onCopyText(
+                      validationCopyText,
+                      `Copied ${validationIssues.length} validation error${validationIssues.length === 1 ? '' : 's'}.`,
+                    )
+                  }
+                >
+                  <CopyIcon />
+                </button>
+              ) : null}
+            </div>
             <p>Complete these before bundling or creating Jira. Download remains available.</p>
           </div>
           <ul className="plain-list required-fields-list">

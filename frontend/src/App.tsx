@@ -96,6 +96,12 @@ function downloadBlob(blob: Blob, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
+const PILOT_ALLOW_DOWNLOAD_WITH_VALIDATION_WARNINGS = true;
+
+function shouldBlockDownloadForValidation(issues: ValidationIssue[]): boolean {
+  return !PILOT_ALLOW_DOWNLOAD_WITH_VALIDATION_WARNINGS && issues.length > 0;
+}
+
 function base64ToBlob(base64: string, type: string) {
   const binary = window.atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -2965,6 +2971,10 @@ export function App() {
     if (!snapshot) return;
     const issues = validateWorkbookModel(snapshot);
     setValidationIssues(issues);
+    if (shouldBlockDownloadForValidation(issues)) {
+      setStatus('Download blocked. Complete all required fields first.');
+      return;
+    }
     setBusy(true);
     setStatus(
       issues.length > 0
@@ -3374,6 +3384,10 @@ export function App() {
     if (!snapshot) return;
     const issues = validateWorkbookModel(snapshot);
     setValidationIssues(issues);
+    if (shouldBlockDownloadForValidation(issues)) {
+      setStatus('Review download blocked. Complete all required fields first.');
+      return;
+    }
     setBusy(true);
     setStatus(
       issues.length > 0
@@ -3601,6 +3615,7 @@ export function App() {
               validationIssues={validationIssues}
               dbCheck={dbCheck}
               onSelectValidationIssue={handleSelectValidationIssue}
+              onCopyText={copyText}
             />
 
             <SaveBanner

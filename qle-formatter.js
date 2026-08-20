@@ -232,6 +232,18 @@ function docBdr(cell) {
 function normalise(t) {
   return String(t).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
+function stripReadabilityMarker(line) {
+  return String(line).replace(/^\s*(?:[•‣◦⁃∙*]|[-–—])\s+/, '').trim();
+}
+function cleanLabelText(value) {
+  return value != null
+    ? normalise(String(value))
+        .split('\n')
+        .map(stripReadabilityMarker)
+        .filter(Boolean)
+        .join('\n')
+    : '';
+}
 function splitEnums(t) {
   return t
     ? normalise(t)
@@ -244,7 +256,7 @@ function splitLabels(t) {
   return t
     ? normalise(t)
         .split('\n')
-        .map((s) => s.trim())
+        .map(stripReadabilityMarker)
         .filter(Boolean)
     : [];
 }
@@ -255,7 +267,7 @@ function splitBulletLabels(t) {
   if (!normalized.includes('•')) return [];
   return normalized
     .split(/(?=•)/g)
-    .map((s) => s.trim())
+    .map(stripReadabilityMarker)
     .filter(Boolean);
 }
 
@@ -273,14 +285,14 @@ function splitDocs(eRaw, enRaw, esRaw, sortN) {
       ? enBullets
       : normalise(String(enRaw ?? ''))
           .split('\n')
-          .map((s) => s.trim())
+          .map(stripReadabilityMarker)
           .filter(Boolean);
   const es =
     esBullets.length === enums.length
       ? esBullets
       : normalise(String(esRaw ?? ''))
           .split('\n')
-          .map((s) => s.trim())
+          .map(stripReadabilityMarker)
           .filter(Boolean);
   return enums.map((e, i) => ({
     sort: enums.length > 1 ? i + 1 : Number(sortN ?? i + 1) || i + 1,
@@ -686,7 +698,7 @@ function findSepQleHeaderIndex(rows) {
 }
 
 function enumFromLabel(label) {
-  const value = cleanValue(label)
+  const value = cleanLabelText(label)
     .replace(/&/g, ' and ')
     .replace(/[^A-Za-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
@@ -696,7 +708,7 @@ function enumFromLabel(label) {
 }
 
 function documentEnumFromLabel(label) {
-  const value = cleanValue(label)
+  const value = cleanLabelText(label)
     .replace(/&/g, ' and ')
     .replace(/[^A-Za-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
@@ -739,16 +751,16 @@ function parseSepQleSheet(rows, styleRows, removedStyleRows) {
     const styles = styleRows?.[i] ?? [];
     const removedStyles = removedStyleRows?.[i] ?? [];
     const eventEnum = cleanValue(row[0]);
-    const eventEn = cleanValue(row[1]);
-    const eventEs = cleanValue(row[2]);
-    const instructionsEn = cleanValue(row[3]);
-    const instructionsEs = cleanValue(row[4]);
+    const eventEn = cleanLabelText(row[1]);
+    const eventEs = cleanLabelText(row[2]);
+    const instructionsEn = cleanLabelText(row[3]);
+    const instructionsEs = cleanLabelText(row[4]);
     const categoryEnum = cleanValue(row[5]) || enumFromLabel(row[6]);
-    const categoryEn = cleanValue(row[6]);
-    const categoryEs = cleanValue(row[7]);
+    const categoryEn = cleanLabelText(row[6]);
+    const categoryEs = cleanLabelText(row[7]);
     const documentEnum = cleanValue(row[8]) || documentEnumFromLabel(row[9]);
-    const documentEn = cleanValue(row[9]);
-    const documentEs = cleanValue(row[10]);
+    const documentEn = cleanLabelText(row[9]);
+    const documentEs = cleanLabelText(row[10]);
     const validation = buildSepValidation(row[11], row[12]);
 
     if (eventEnum && eventEn) {
@@ -999,6 +1011,13 @@ function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemove
     const v = row[ci];
     return v != null ? String(v).trim() : null;
   };
+  const gl = (row, slot) => {
+    const ci = map[slot];
+    if (ci === undefined) return null;
+    const v = row[ci];
+    const value = cleanLabelText(v);
+    return value || null;
+  };
   const gv = (row, slot) => {
     const ci = map[slot];
     return ci !== undefined ? row[ci] : null;
@@ -1038,16 +1057,16 @@ function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemove
     const categoryIsRemoved = hasRemoved(rowRemovedStyles, [5, 6, 7, 12]);
     const documentIsRemoved = hasRemoved(rowRemovedStyles, [8, 9, 10, 11]);
     const evEnum = g(row, 0),
-      evEn = g(row, 1),
-      evEs = g(row, 2),
-      whatEn = g(row, 3),
-      whatEs = g(row, 4);
+      evEn = gl(row, 1),
+      evEs = gl(row, 2),
+      whatEn = gl(row, 3),
+      whatEs = gl(row, 4);
     const catEnum = g(row, 5),
-      catEn = g(row, 6),
-      catEs = g(row, 7);
+      catEn = gl(row, 6),
+      catEs = gl(row, 7);
     const docEnum = g(row, 8),
-      docEn = g(row, 9),
-      docEs = g(row, 10);
+      docEn = gl(row, 9),
+      docEs = gl(row, 10);
     const sortN = gv(row, 11),
       valRule = g(row, 12);
 
