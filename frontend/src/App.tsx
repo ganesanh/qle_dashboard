@@ -3569,9 +3569,12 @@ export function App() {
         hasWorkbook={Boolean(edited)}
         busy={busy}
         hasUnsavedChanges={hasUnsavedChanges}
+        integrationStatus={integrationStatus}
         onToggleSidebar={() => setSidebarExpanded((current) => !current)}
         onSelectFlow={(flow) => setActiveFlow(flow)}
         onDownload={() => void handleSaveWorkbook()}
+        onConnectIntegration={handleConnectIntegration}
+        onDisconnectIntegration={(provider) => void handleDisconnectIntegration(provider)}
       />
 
       <main className="main-pane">
@@ -3591,15 +3594,12 @@ export function App() {
             developerReviewChangesCollapsed={developerReviewChangesCollapsed}
             developerUiCodeReviewCollapsed={developerUiCodeReviewCollapsed}
             developerPrSummaryCollapsed={developerPrSummaryCollapsed}
-            integrationStatus={integrationStatus}
             onToggleCollapsed={() => setDeveloperWorkspaceCollapsed((current) => !current)}
             onDeveloperJiraKeyChange={handleDeveloperJiraKeyChange}
             onDeveloperWorkbookSelect={handleDeveloperWorkbookSelect}
             onRunImplementationFlow={() => void handleRunDeveloperFlow()}
             onApproveAndPush={() => void handleApproveDeveloperFlow()}
             onCreatePr={() => void handleCreateDeveloperPr()}
-            onConnectIntegration={handleConnectIntegration}
-            onDisconnectIntegration={(provider) => void handleDisconnectIntegration(provider)}
             onToggleReviewChanges={() => setDeveloperReviewChangesCollapsed((current) => !current)}
             onToggleUiCodeReview={() => setDeveloperUiCodeReviewCollapsed((current) => !current)}
             onTogglePrSummary={() => setDeveloperPrSummaryCollapsed((current) => !current)}

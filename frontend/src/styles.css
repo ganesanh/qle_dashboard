@@ -52,6 +52,11 @@ textarea {
   top: 0;
 }
 
+.rail-top {
+  display: grid;
+  gap: 14px;
+}
+
 .rail-badge {
   min-height: 40px;
   border-radius: 14px;
@@ -96,6 +101,78 @@ textarea {
   transform: translateY(-1px);
 }
 
+.rail-integrations {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(124, 87, 48, 0.12);
+}
+
+.rail-section-label {
+  padding-inline: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #9b8463;
+}
+
+.rail-integration.connected {
+  color: #166534;
+}
+
+.rail-integration.connected::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 999px;
+  background: #22c55e;
+}
+
+.rail-user {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #4a453c;
+}
+
+.rail-user-avatar {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.rail-user-copy {
+  display: grid;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.rail-user-copy span {
+  font-size: 0.72rem;
+  color: #756b59;
+}
+
+.rail-user-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
 .rail-nav svg {
   width: 20px;
   height: 20px;
@@ -120,6 +197,20 @@ textarea {
   width: 40px;
   padding-inline: 0;
   margin-inline: auto;
+}
+
+.sidebar-collapsed .rail-section-label,
+.sidebar-collapsed .rail-user-copy {
+  display: none;
+}
+
+.sidebar-collapsed .rail-user {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar-collapsed .rail-integration.connected::after {
+  display: none;
 }
 
 .sidebar h1,
@@ -1372,6 +1463,14 @@ button:disabled {
   background: #12141c;
 }
 
+.rail-integrations {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+.rail-section-label {
+  color: #717b92;
+}
+
 .rail-badge {
   background: rgba(255, 255, 255, 0.05);
   border-color: rgba(255, 255, 255, 0.08);
@@ -1390,6 +1489,23 @@ button:disabled {
   background: #eef1fb;
   box-shadow: none;
   transform: none;
+}
+
+.rail-integration.connected {
+  color: #86efac;
+}
+
+.rail-integration.connected:hover {
+  color: #166534;
+}
+
+.rail-user {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f4f6fb;
+}
+
+.rail-user-copy span {
+  color: #9aa3b8;
 }
 
 .status-bar {

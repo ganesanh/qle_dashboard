@@ -56,9 +56,12 @@ type SidebarRailProps = {
   hasWorkbook: boolean;
   busy: boolean;
   hasUnsavedChanges: boolean;
+  integrationStatus: IntegrationStatusResponse | null;
   onToggleSidebar: () => void;
   onSelectFlow: (flow: 'pm' | 'developer') => void;
   onDownload: () => void;
+  onConnectIntegration: (provider: OAuthProvider) => void;
+  onDisconnectIntegration: (provider: OAuthProvider) => void;
 };
 
 type WorkbookUploadCardProps = {
@@ -143,15 +146,12 @@ type DeveloperDashboardProps = {
   developerReviewChangesCollapsed: boolean;
   developerUiCodeReviewCollapsed: boolean;
   developerPrSummaryCollapsed: boolean;
-  integrationStatus: IntegrationStatusResponse | null;
   onToggleCollapsed: () => void;
   onDeveloperJiraKeyChange: (value: string) => void;
   onDeveloperWorkbookSelect: (file: File | null) => void;
   onRunImplementationFlow: () => void;
   onApproveAndPush: () => void;
   onCreatePr: () => void;
-  onConnectIntegration: (provider: OAuthProvider) => void;
-  onDisconnectIntegration: (provider: OAuthProvider) => void;
   onToggleReviewChanges: () => void;
   onToggleUiCodeReview: () => void;
   onTogglePrSummary: () => void;
@@ -232,50 +232,98 @@ export function SidebarRail({
   hasWorkbook,
   busy,
   hasUnsavedChanges,
+  integrationStatus,
   onToggleSidebar,
   onSelectFlow,
   onDownload,
+  onConnectIntegration,
+  onDisconnectIntegration,
 }: SidebarRailProps) {
+  const connectedProvider = integrationStatus?.providers.find((provider) => provider.connected);
+  const connectedName = connectedProvider?.accountLabel;
   return (
     <aside className="sidebar-shell">
       <nav className="nav-rail" aria-label="Flow navigation">
-        <button
-          type="button"
-          className="rail-badge rail-toggle"
-          title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-          onClick={onToggleSidebar}
-        >
-          {sidebarExpanded ? 'QLE Document' : 'Q'}
-        </button>
-        <button
-          type="button"
-          className={`rail-nav ${activeFlow === 'pm' ? 'active' : ''}`}
-          onClick={() => onSelectFlow('pm')}
-          title="PM Dashboard"
-        >
-          <ClipboardIcon />
-          {sidebarExpanded ? <span>PM Dashboard</span> : null}
-        </button>
-        <button
-          type="button"
-          className={`rail-nav ${activeFlow === 'developer' ? 'active' : ''}`}
-          onClick={() => onSelectFlow('developer')}
-          title="Developer Dashboard"
-        >
-          <CodeIcon />
-          {sidebarExpanded ? <span>Developer Dashboard</span> : null}
-        </button>
-        {hasWorkbook ? (
+        <div className="rail-top">
           <button
             type="button"
-            className="rail-nav rail-download"
-            disabled={busy || !hasUnsavedChanges}
-            onClick={onDownload}
-            title="Download the latest formatted workbook"
+            className="rail-badge rail-toggle"
+            title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+            onClick={onToggleSidebar}
           >
-            <DownloadIcon />
-            {sidebarExpanded ? <span>Download</span> : null}
+            {sidebarExpanded ? 'QLE Dashboard' : 'Q'}
           </button>
+          <button
+            type="button"
+            className={`rail-nav ${activeFlow === 'pm' ? 'active' : ''}`}
+            onClick={() => onSelectFlow('pm')}
+            title="PM Dashboard"
+          >
+            <ClipboardIcon />
+            {sidebarExpanded ? <span>PM Dashboard</span> : null}
+          </button>
+          <button
+            type="button"
+            className={`rail-nav ${activeFlow === 'developer' ? 'active' : ''}`}
+            onClick={() => onSelectFlow('developer')}
+            title="Developer Dashboard"
+          >
+            <CodeIcon />
+            {sidebarExpanded ? <span>Developer Dashboard</span> : null}
+          </button>
+          {hasWorkbook ? (
+            <button
+              type="button"
+              className="rail-nav rail-download"
+              disabled={busy || !hasUnsavedChanges}
+              onClick={onDownload}
+              title="Download the latest formatted workbook"
+            >
+              <DownloadIcon />
+              {sidebarExpanded ? <span>Download</span> : null}
+            </button>
+          ) : null}
+          <div className="rail-integrations" aria-label="Connected apps">
+            {sidebarExpanded ? <div className="rail-section-label">Connect</div> : null}
+            {(integrationStatus?.providers ?? []).map((provider) => (
+              <button
+                key={provider.provider}
+                type="button"
+                className={`rail-nav rail-integration ${provider.connected ? 'connected' : ''}`}
+                disabled={busy || (!provider.connected && !provider.configured)}
+                title={
+                  provider.connected
+                    ? `Disconnect ${provider.label}`
+                    : provider.configured
+                      ? `Connect ${provider.label}`
+                      : `Configure ${provider.missingConfig.join(', ')} in Railway first`
+                }
+                onClick={() =>
+                  provider.connected
+                    ? onDisconnectIntegration(provider.provider)
+                    : onConnectIntegration(provider.provider)
+                }
+              >
+                <GearIcon />
+                {sidebarExpanded ? (
+                  <span>
+                    {provider.provider === 'atlassian' ? 'Jira + Confluence' : provider.label}
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </div>
+        {connectedName ? (
+          <div className="rail-user" title={`Authenticated as ${connectedName}`}>
+            <div className="rail-user-avatar">{connectedName.trim().slice(0, 1).toUpperCase()}</div>
+            {sidebarExpanded ? (
+              <div className="rail-user-copy">
+                <span>Authenticated</span>
+                <strong>{connectedName}</strong>
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </nav>
     </aside>
@@ -664,15 +712,12 @@ export function DeveloperDashboard({
   developerReviewChangesCollapsed,
   developerUiCodeReviewCollapsed,
   developerPrSummaryCollapsed,
-  integrationStatus,
   onToggleCollapsed,
   onDeveloperJiraKeyChange,
   onDeveloperWorkbookSelect,
   onRunImplementationFlow,
   onApproveAndPush,
   onCreatePr,
-  onConnectIntegration,
-  onDisconnectIntegration,
   onToggleReviewChanges,
   onToggleUiCodeReview,
   onTogglePrSummary,
@@ -754,60 +799,6 @@ export function DeveloperDashboard({
             </div>
 
             <div className="workflow-grid">
-              <div className="panel developer-panel">
-                <div className="panel-header">
-                  <h3>Connected Apps</h3>
-                </div>
-                <div className="integration-list">
-                  {(integrationStatus?.providers ?? []).map((provider) => (
-                    <div className="integration-row" key={provider.provider}>
-                      <div>
-                        <strong>{provider.label}</strong>
-                        <span>
-                          {provider.connected
-                            ? `Connected${provider.connectedAt ? ` ${new Date(provider.connectedAt).toLocaleDateString()}` : ''}`
-                            : provider.configured
-                              ? 'Ready to connect with OAuth'
-                              : `Missing ${provider.missingConfig.join(', ')}`}
-                        </span>
-                      </div>
-                      {provider.connected ? (
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={busy}
-                          onClick={() => onDisconnectIntegration(provider.provider)}
-                        >
-                          Disconnect
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={busy || !provider.configured}
-                          title={
-                            provider.configured
-                              ? `Connect ${provider.label}`
-                              : `Configure ${provider.missingConfig.join(', ')} in Railway first`
-                          }
-                          onClick={() => onConnectIntegration(provider.provider)}
-                        >
-                          Connect
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {!integrationStatus ? (
-                    <p className="field-hint">Checking app connection settings...</p>
-                  ) : null}
-                  {integrationStatus && (!integrationStatus.sessionReady || !integrationStatus.encryptionReady) ? (
-                    <p className="field-hint developer-warning">
-                      Configure SESSION_SECRET and OAUTH_TOKEN_ENCRYPTION_KEY in Railway before OAuth tokens can be stored.
-                    </p>
-                  ) : null}
-                </div>
-              </div>
-
               <div className="panel developer-panel">
                 <div className="panel-header">
                   <h3>Planned actions</h3>

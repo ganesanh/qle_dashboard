@@ -81,6 +81,7 @@ function providerConfigs(req: Request): Record<OAuthProvider, ProviderConfig> {
       redirectUri: atlassianRedirectUri,
       scopes: [
         'offline_access',
+        'read:me',
         'read:jira-work',
         'write:jira-work',
         'read:confluence-content.all',
@@ -302,6 +303,28 @@ async function exchangeBitbucketCode(config: ProviderConfig, code: string): Prom
   return response.json() as Promise<OAuthTokenResponse>;
 }
 
+async function fetchAccountLabel(provider: OAuthProvider, accessToken: string): Promise<string | undefined> {
+  const url =
+    provider === 'atlassian'
+      ? 'https://api.atlassian.com/me'
+      : 'https://api.bitbucket.org/2.0/user';
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!response.ok) return undefined;
+  const payload = (await response.json()) as {
+    name?: string;
+    displayName?: string;
+    display_name?: string;
+    email?: string;
+    nickname?: string;
+  };
+  return payload.name ?? payload.displayName ?? payload.display_name ?? payload.email ?? payload.nickname;
+}
+
 export async function completeOAuthCallback(
   req: Request,
   res: Response,
@@ -327,6 +350,9 @@ export async function completeOAuthCallback(
     provider === 'atlassian'
       ? await exchangeAtlassianCode(config, code)
       : await exchangeBitbucketCode(config, code);
+  const accountLabel = token.access_token
+    ? await fetchAccountLabel(provider, token.access_token).catch(() => undefined)
+    : undefined;
 
   const scopes = (token.scope ?? token.scopes ?? config.scopes.join(' ')).split(/\s+/).filter(Boolean);
   const store = await readStore(storageDir);
@@ -335,7 +361,7 @@ export async function completeOAuthCallback(
     [provider]: {
       provider,
       connectedAt: new Date().toISOString(),
-      accountLabel: config.label,
+      accountLabel,
       scopes,
       token: encryptJson(token),
     },
