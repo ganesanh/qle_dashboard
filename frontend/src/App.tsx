@@ -11,9 +11,11 @@ import type {
   DeveloperStageResult,
   DiffEntry,
   DiffSummary,
+  IntegrationStatusResponse,
   JiraCreateResult,
   JiraDraftForm,
   JiraDraft,
+  OAuthProvider,
   QleCategory,
   QleDocument,
   QleEnumRow,
@@ -2194,6 +2196,7 @@ export function App() {
   const [developerReviewChangesCollapsed, setDeveloperReviewChangesCollapsed] = useState(false);
   const [developerUiCodeReviewCollapsed, setDeveloperUiCodeReviewCollapsed] = useState(true);
   const [developerPrSummaryCollapsed, setDeveloperPrSummaryCollapsed] = useState(true);
+  const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatusResponse | null>(null);
   const [status, setStatus] = useState<string>('Upload a workbook to get started.');
   const [busy, setBusy] = useState(false);
   const [lastAutosavedAt, setLastAutosavedAt] = useState<string | null>(null);
@@ -2371,6 +2374,30 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  async function refreshIntegrationStatus() {
+    const payload = await fetchJson<IntegrationStatusResponse>('/api/integrations/status');
+    setIntegrationStatus(payload);
+    return payload;
+  }
+
+  useEffect(() => {
+    void refreshIntegrationStatus().catch(() => {
+      // Integration setup is optional until OAuth env vars are configured.
+    });
+  }, []);
+
+  function handleConnectIntegration(provider: OAuthProvider) {
+    window.location.href = `/api/oauth/${provider}/connect`;
+  }
+
+  async function handleDisconnectIntegration(provider: OAuthProvider) {
+    const payload = await fetchJson<IntegrationStatusResponse>(`/api/oauth/${provider}`, {
+      method: 'DELETE',
+    });
+    setIntegrationStatus(payload);
+    setStatus('Integration disconnected.');
+  }
 
   useEffect(() => {
     if (activeFlow !== 'pm') {
@@ -3564,12 +3591,15 @@ export function App() {
             developerReviewChangesCollapsed={developerReviewChangesCollapsed}
             developerUiCodeReviewCollapsed={developerUiCodeReviewCollapsed}
             developerPrSummaryCollapsed={developerPrSummaryCollapsed}
+            integrationStatus={integrationStatus}
             onToggleCollapsed={() => setDeveloperWorkspaceCollapsed((current) => !current)}
             onDeveloperJiraKeyChange={handleDeveloperJiraKeyChange}
             onDeveloperWorkbookSelect={handleDeveloperWorkbookSelect}
             onRunImplementationFlow={() => void handleRunDeveloperFlow()}
             onApproveAndPush={() => void handleApproveDeveloperFlow()}
             onCreatePr={() => void handleCreateDeveloperPr()}
+            onConnectIntegration={handleConnectIntegration}
+            onDisconnectIntegration={(provider) => void handleDisconnectIntegration(provider)}
             onToggleReviewChanges={() => setDeveloperReviewChangesCollapsed((current) => !current)}
             onToggleUiCodeReview={() => setDeveloperUiCodeReviewCollapsed((current) => !current)}
             onTogglePrSummary={() => setDeveloperPrSummaryCollapsed((current) => !current)}

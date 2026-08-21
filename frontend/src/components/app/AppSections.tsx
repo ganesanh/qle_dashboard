@@ -4,6 +4,8 @@ import type {
   DeveloperFlowStatus,
   DeveloperStageResult,
   DiffSummary,
+  IntegrationStatusResponse,
+  OAuthProvider,
   QleWorkbookModel,
 } from '../../../../shared/types';
 import type { ValidationIssue } from '../../../../shared/validation';
@@ -141,12 +143,15 @@ type DeveloperDashboardProps = {
   developerReviewChangesCollapsed: boolean;
   developerUiCodeReviewCollapsed: boolean;
   developerPrSummaryCollapsed: boolean;
+  integrationStatus: IntegrationStatusResponse | null;
   onToggleCollapsed: () => void;
   onDeveloperJiraKeyChange: (value: string) => void;
   onDeveloperWorkbookSelect: (file: File | null) => void;
   onRunImplementationFlow: () => void;
   onApproveAndPush: () => void;
   onCreatePr: () => void;
+  onConnectIntegration: (provider: OAuthProvider) => void;
+  onDisconnectIntegration: (provider: OAuthProvider) => void;
   onToggleReviewChanges: () => void;
   onToggleUiCodeReview: () => void;
   onTogglePrSummary: () => void;
@@ -659,12 +664,15 @@ export function DeveloperDashboard({
   developerReviewChangesCollapsed,
   developerUiCodeReviewCollapsed,
   developerPrSummaryCollapsed,
+  integrationStatus,
   onToggleCollapsed,
   onDeveloperJiraKeyChange,
   onDeveloperWorkbookSelect,
   onRunImplementationFlow,
   onApproveAndPush,
   onCreatePr,
+  onConnectIntegration,
+  onDisconnectIntegration,
   onToggleReviewChanges,
   onToggleUiCodeReview,
   onTogglePrSummary,
@@ -746,6 +754,60 @@ export function DeveloperDashboard({
             </div>
 
             <div className="workflow-grid">
+              <div className="panel developer-panel">
+                <div className="panel-header">
+                  <h3>Connected Apps</h3>
+                </div>
+                <div className="integration-list">
+                  {(integrationStatus?.providers ?? []).map((provider) => (
+                    <div className="integration-row" key={provider.provider}>
+                      <div>
+                        <strong>{provider.label}</strong>
+                        <span>
+                          {provider.connected
+                            ? `Connected${provider.connectedAt ? ` ${new Date(provider.connectedAt).toLocaleDateString()}` : ''}`
+                            : provider.configured
+                              ? 'Ready to connect with OAuth'
+                              : `Missing ${provider.missingConfig.join(', ')}`}
+                        </span>
+                      </div>
+                      {provider.connected ? (
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={busy}
+                          onClick={() => onDisconnectIntegration(provider.provider)}
+                        >
+                          Disconnect
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={busy || !provider.configured}
+                          title={
+                            provider.configured
+                              ? `Connect ${provider.label}`
+                              : `Configure ${provider.missingConfig.join(', ')} in Railway first`
+                          }
+                          onClick={() => onConnectIntegration(provider.provider)}
+                        >
+                          Connect
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {!integrationStatus ? (
+                    <p className="field-hint">Checking app connection settings...</p>
+                  ) : null}
+                  {integrationStatus && (!integrationStatus.sessionReady || !integrationStatus.encryptionReady) ? (
+                    <p className="field-hint developer-warning">
+                      Configure SESSION_SECRET and OAUTH_TOKEN_ENCRYPTION_KEY in Railway before OAuth tokens can be stored.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
               <div className="panel developer-panel">
                 <div className="panel-header">
                   <h3>Planned actions</h3>

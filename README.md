@@ -139,6 +139,20 @@ Jira settings:
 - `JIRA_API_TOKEN`
 - `JIRA_PROJECT_KEY`
 
+OAuth integration settings:
+
+- `APP_BASE_URL`
+- `SESSION_SECRET`
+- `OAUTH_TOKEN_ENCRYPTION_KEY`
+- `ATLASSIAN_CLIENT_ID`
+- `ATLASSIAN_CLIENT_SECRET`
+- `ATLASSIAN_REDIRECT_URI`
+- `BITBUCKET_CLIENT_ID`
+- `BITBUCKET_CLIENT_SECRET`
+- `BITBUCKET_REDIRECT_URI`
+
+OAuth client secrets should be stored as Railway variables, preferably sealed. User OAuth tokens are encrypted before being written to runtime storage.
+
 ## Main endpoints
 
 - `POST /api/import-workbook`
@@ -148,6 +162,10 @@ Jira settings:
 - `POST /api/bundles`
 - `POST /api/jira/draft`
 - `POST /api/jira/create`
+- `GET /api/integrations/status`
+- `GET /api/oauth/:provider/connect`
+- `GET /api/oauth/:provider/callback`
+- `DELETE /api/oauth/:provider`
 - `GET /api/db/config`
 - `POST /api/db/config`
 

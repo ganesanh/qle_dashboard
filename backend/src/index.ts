@@ -38,7 +38,15 @@ import {
   hasBuiltClient,
   isProduction,
   port,
+  storageDir,
 } from './runtimeConfig.js';
+import {
+  buildOAuthAuthorizeUrl,
+  completeOAuthCallback,
+  disconnectIntegration,
+  getIntegrationStatus,
+  isOAuthProvider,
+} from './oauth.js';
 import { buildVersionedFormattedName } from '../../shared/fileNames.js';
 import { validateWorkbookModel } from '../../shared/validation.js';
 import type {
@@ -2052,6 +2060,55 @@ app.get('/api/jira/config', (_req, res) => {
     baseUrl: process.env.JIRA_BASE_URL ?? '',
     projectKey: process.env.JIRA_PROJECT_KEY ?? '',
   });
+});
+
+app.get('/api/integrations/status', async (req, res, next) => {
+  try {
+    res.json(await getIntegrationStatus(req, res, storageDir));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/oauth/:provider/connect', (req, res, next) => {
+  try {
+    const provider = req.params.provider;
+    if (!isOAuthProvider(provider)) {
+      res.status(404).json({ error: 'Unknown OAuth provider.' });
+      return;
+    }
+    res.redirect(buildOAuthAuthorizeUrl(req, res, provider));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/oauth/:provider/callback', async (req, res, next) => {
+  try {
+    const provider = req.params.provider;
+    if (!isOAuthProvider(provider)) {
+      res.status(404).json({ error: 'Unknown OAuth provider.' });
+      return;
+    }
+    await completeOAuthCallback(req, res, storageDir, provider);
+    res.redirect('/?integration=connected');
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete('/api/oauth/:provider', async (req, res, next) => {
+  try {
+    const provider = req.params.provider;
+    if (!isOAuthProvider(provider)) {
+      res.status(404).json({ error: 'Unknown OAuth provider.' });
+      return;
+    }
+    await disconnectIntegration(req, res, storageDir, provider);
+    res.json(await getIntegrationStatus(req, res, storageDir));
+  } catch (error) {
+    next(error);
+  }
 });
 
 const dbConfigSchema = z.object({

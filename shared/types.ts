@@ -137,6 +137,25 @@ export type DbConfigResponse = {
   config: DbConfig;
 };
 
+export type OAuthProvider = 'atlassian' | 'bitbucket';
+
+export type IntegrationConnectionStatus = {
+  provider: OAuthProvider;
+  label: string;
+  configured: boolean;
+  connected: boolean;
+  connectedAt?: string;
+  accountLabel?: string;
+  scopes?: string[];
+  missingConfig: string[];
+};
+
+export type IntegrationStatusResponse = {
+  sessionReady: boolean;
+  encryptionReady: boolean;
+  providers: IntegrationConnectionStatus[];
+};
+
 export type JiraDraftForm = {
   summary: string;
   description: string;

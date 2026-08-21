@@ -662,6 +662,32 @@ button:disabled {
   margin-top: 2px;
 }
 
+.integration-list {
+  display: grid;
+  gap: 10px;
+}
+
+.integration-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(146, 124, 89, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.integration-row div {
+  display: grid;
+  gap: 4px;
+}
+
+.integration-row span {
+  color: #6d6558;
+  line-height: 1.35;
+}
+
 .events-panel {
   display: grid;
   gap: 14px;
