@@ -232,6 +232,18 @@ function docBdr(cell) {
 function normalise(t) {
   return String(t).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
+function stripReadabilityMarker(line) {
+  return String(line).replace(/^\s*(?:[•‣◦⁃∙*]|[-–—])\s+/, '').trim();
+}
+function cleanLabelText(value) {
+  return value != null
+    ? normalise(String(value))
+        .split('\n')
+        .map(stripReadabilityMarker)
+        .filter(Boolean)
+        .join('\n')
+    : '';
+}
 function splitEnums(t) {
   return t
     ? normalise(t)
@@ -244,7 +256,7 @@ function splitLabels(t) {
   return t
     ? normalise(t)
         .split('\n')
-        .map((s) => s.trim())
+        .map(stripReadabilityMarker)
         .filter(Boolean)
     : [];
 }
@@ -255,7 +267,7 @@ function splitBulletLabels(t) {
   if (!normalized.includes('•')) return [];
   return normalized
     .split(/(?=•)/g)
-    .map((s) => s.trim())
+    .map(stripReadabilityMarker)
     .filter(Boolean);
 }
 
@@ -273,14 +285,14 @@ function splitDocs(eRaw, enRaw, esRaw, sortN) {
       ? enBullets
       : normalise(String(enRaw ?? ''))
           .split('\n')
-          .map((s) => s.trim())
+          .map(stripReadabilityMarker)
           .filter(Boolean);
   const es =
     esBullets.length === enums.length
       ? esBullets
       : normalise(String(esRaw ?? ''))
           .split('\n')
-          .map((s) => s.trim())
+          .map(stripReadabilityMarker)
           .filter(Boolean);
   return enums.map((e, i) => ({
     sort: enums.length > 1 ? i + 1 : Number(sortN ?? i + 1) || i + 1,
@@ -337,6 +349,8 @@ function findSheetName(wb) {
     'Configuration and Validation Ru',
     'QLE_Documents',
     'QLE Documents',
+    'Document Requirements',
+    'Event Configuration',
   ])
     if (names.includes(n)) return n;
   return (
@@ -665,11 +679,171 @@ function cleanValue(value) {
   return value != null ? normalise(String(value)).trim() : '';
 }
 
+function normaliseHeader(value) {
+  return cleanValue(value).toLowerCase().replace(/\s+/g, ' ');
+}
+
+function findSepQleHeaderIndex(rows) {
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const row = rows[i].map(normaliseHeader);
+    if (
+      row[0]?.includes('event name') &&
+      row[5]?.includes('document category') &&
+      row[8]?.includes('accepted document')
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function enumFromLabel(label) {
+  const value = cleanLabelText(label)
+    .replace(/&/g, ' and ')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+  if (!value) return '';
+  return value.startsWith('PROOF_OF_') ? value : `PROOF_OF_${value}`;
+}
+
+function documentEnumFromLabel(label) {
+  const value = cleanLabelText(label)
+    .replace(/&/g, ' and ')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+  if (!value) return '';
+  return value.startsWith('DOC_') ? value : `DOC_${value}`;
+}
+
+function buildSepValidation(docsRequired, mandatoryDocuments) {
+  const qty = cleanValue(docsRequired);
+  const mandatory = splitLabels(mandatoryDocuments)
+    .map((value) => value.replace(/^[•\\-\\s]+/, '').trim())
+    .filter(Boolean);
+  return [
+    qty ? `documentsQty: ${qty}` : '',
+    `mandatoryDocuments: [${mandatory.join(', ')}]`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function parseSepQleSheet(rows, styleRows, removedStyleRows) {
+  const headerIndex = findSepQleHeaderIndex(rows);
+  if (headerIndex < 0) return [];
+
+  console.log(`  ${T.grey}Source shape: SEP/QLE document requirements${T.reset}`);
+
+  const events = [];
+  let evt = null,
+    cat = null,
+    lastDoc = null;
+
+  const rowHasNew = (styles, indexes) =>
+    indexes.some((index) => styles?.[index] === true);
+  const rowHasRemoved = (styles, indexes) =>
+    indexes.some((index) => styles?.[index] === true);
+
+  for (let i = headerIndex + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const styles = styleRows?.[i] ?? [];
+    const removedStyles = removedStyleRows?.[i] ?? [];
+    const eventEnum = cleanValue(row[0]);
+    const eventEn = cleanLabelText(row[1]);
+    const eventEs = cleanLabelText(row[2]);
+    const instructionsEn = cleanLabelText(row[3]);
+    const instructionsEs = cleanLabelText(row[4]);
+    const categoryEnum = cleanValue(row[5]) || enumFromLabel(row[6]);
+    const categoryEn = cleanLabelText(row[6]);
+    const categoryEs = cleanLabelText(row[7]);
+    const documentEnum = cleanValue(row[8]) || documentEnumFromLabel(row[9]);
+    const documentEn = cleanLabelText(row[9]);
+    const documentEs = cleanLabelText(row[10]);
+    const validation = buildSepValidation(row[11], row[12]);
+
+    if (eventEnum && eventEn) {
+      const enums = splitEnums(eventEnum);
+      const en = splitLabels(eventEn);
+      const es = splitLabels(eventEs);
+      const isRemoved = rowHasRemoved(removedStyles, [0, 1, 2, 3, 4]);
+      const eventFlags = buildSplitNewFlags(
+        enums.length,
+        rowHasNew(styles, [0, 1, 2, 3, 4]) && !isRemoved,
+      );
+      evt = {
+        enumRows: enums.map((value, index) => ({
+          enum: value,
+          en: en[index] ?? en[en.length - 1] ?? '',
+          es: es[index] ?? es[es.length - 1] ?? '',
+          isNew: eventFlags.itemFlags[index] ?? false,
+          isRemoved,
+        })),
+        what: instructionsEn,
+        whatEs: instructionsEs,
+        categories: [],
+        rowIsNew: eventFlags.rowIsNew,
+        isRemoved,
+      };
+      events.push(evt);
+      cat = null;
+      lastDoc = null;
+    }
+
+    if (categoryEnum && evt) {
+      const isRemoved =
+        evt.isRemoved || rowHasRemoved(removedStyles, [5, 6, 7, 11, 12]);
+      cat = {
+        enum: categoryEnum,
+        en: categoryEn,
+        es: categoryEs,
+        validation,
+        documents: [],
+        isRemoved,
+        isNew: rowHasNew(styles, [5, 6, 7, 11, 12]) && !isRemoved,
+      };
+      evt.categories.push(cat);
+      lastDoc = null;
+    }
+
+    if (documentEnum && cat) {
+      const parsedDocs = splitDocs(documentEnum, documentEn, documentEs, null);
+      const isRemoved =
+        evt?.isRemoved || cat.isRemoved || rowHasRemoved(removedStyles, [8, 9, 10]);
+      const docFlags =
+        evt?.rowIsNew || cat.isNew
+          ? promoteAllFlags(
+              buildSplitNewFlags(
+                parsedDocs.length,
+                rowHasNew(styles, [8, 9, 10]) && !isRemoved,
+              ),
+            )
+          : buildSplitNewFlags(
+              parsedDocs.length,
+              rowHasNew(styles, [8, 9, 10]) && !isRemoved,
+            );
+      const docs = parsedDocs.map((doc, index) => ({
+        ...doc,
+        isRemoved,
+        isNew: (docFlags.itemFlags[index] ?? false) && !isRemoved,
+      }));
+      cat.documents.push(...docs);
+      lastDoc = docs[docs.length - 1] ?? lastDoc;
+    } else if (!documentEnum && cat && lastDoc && (documentEn || documentEs)) {
+      if (documentEn) lastDoc.en = lastDoc.en ? `${lastDoc.en}\n${documentEn}` : documentEn;
+      if (documentEs) lastDoc.es = lastDoc.es ? `${lastDoc.es}\n${documentEs}` : documentEs;
+    }
+  }
+
+  return normalizeDocumentSorts(events);
+}
+
 function findFormattedHeaderIndex(rows) {
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]
       .slice(0, 6)
-      .map((value) => cleanValue(value).toLowerCase().replace(/\s+/g, ' '));
+      .map(normaliseHeader);
     if (
       row[0] === 'field' &&
       row[1] === 'enum' &&
@@ -837,6 +1011,13 @@ function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemove
     const v = row[ci];
     return v != null ? String(v).trim() : null;
   };
+  const gl = (row, slot) => {
+    const ci = map[slot];
+    if (ci === undefined) return null;
+    const v = row[ci];
+    const value = cleanLabelText(v);
+    return value || null;
+  };
   const gv = (row, slot) => {
     const ci = map[slot];
     return ci !== undefined ? row[ci] : null;
@@ -876,16 +1057,16 @@ function parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemove
     const categoryIsRemoved = hasRemoved(rowRemovedStyles, [5, 6, 7, 12]);
     const documentIsRemoved = hasRemoved(rowRemovedStyles, [8, 9, 10, 11]);
     const evEnum = g(row, 0),
-      evEn = g(row, 1),
-      evEs = g(row, 2),
-      whatEn = g(row, 3),
-      whatEs = g(row, 4);
+      evEn = gl(row, 1),
+      evEs = gl(row, 2),
+      whatEn = gl(row, 3),
+      whatEs = gl(row, 4);
     const catEnum = g(row, 5),
-      catEn = g(row, 6),
-      catEs = g(row, 7);
+      catEn = gl(row, 6),
+      catEs = gl(row, 7);
     const docEnum = g(row, 8),
-      docEn = g(row, 9),
-      docEs = g(row, 10);
+      docEn = gl(row, 9),
+      docEs = gl(row, 10);
     const sortN = gv(row, 11),
       valRule = g(row, 12);
 
@@ -1332,6 +1513,10 @@ async function loadEvents(absInput, ExcelJS) {
 
   if (findFormattedHeaderIndex(rows) >= 0) {
     return parseFormattedSheet(rows, styleRows, removedStyleRows);
+  }
+
+  if (findSepQleHeaderIndex(rows) >= 0) {
+    return parseSepQleSheet(rows, styleRows, removedStyleRows);
   }
 
   return parseSheet(rows, styleRows, removedStyleRows, lineStyleRows, lineRemovedRows);

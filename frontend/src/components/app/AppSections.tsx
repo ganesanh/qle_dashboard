@@ -4,6 +4,8 @@ import type {
   DeveloperFlowStatus,
   DeveloperStageResult,
   DiffSummary,
+  IntegrationStatusResponse,
+  OAuthProvider,
   QleWorkbookModel,
 } from '../../../../shared/types';
 import type { ValidationIssue } from '../../../../shared/validation';
@@ -54,9 +56,12 @@ type SidebarRailProps = {
   hasWorkbook: boolean;
   busy: boolean;
   hasUnsavedChanges: boolean;
+  integrationStatus: IntegrationStatusResponse | null;
   onToggleSidebar: () => void;
   onSelectFlow: (flow: 'pm' | 'developer') => void;
   onDownload: () => void;
+  onConnectIntegration: (provider: OAuthProvider) => void;
+  onDisconnectIntegration: (provider: OAuthProvider) => void;
 };
 
 type WorkbookUploadCardProps = {
@@ -108,6 +113,7 @@ type WorkflowInsightsProps = {
   validationIssues: ValidationIssue[];
   dbCheck: DbEventCheckResult | null;
   onSelectValidationIssue?: (issue: ValidationIssue) => void;
+  onCopyText?: (value: string, successMessage: string) => Promise<void>;
 };
 
 type SaveBannerProps = {
@@ -226,50 +232,98 @@ export function SidebarRail({
   hasWorkbook,
   busy,
   hasUnsavedChanges,
+  integrationStatus,
   onToggleSidebar,
   onSelectFlow,
   onDownload,
+  onConnectIntegration,
+  onDisconnectIntegration,
 }: SidebarRailProps) {
+  const connectedProvider = integrationStatus?.providers.find((provider) => provider.connected);
+  const connectedName = connectedProvider?.accountLabel;
   return (
     <aside className="sidebar-shell">
       <nav className="nav-rail" aria-label="Flow navigation">
-        <button
-          type="button"
-          className="rail-badge rail-toggle"
-          title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-          onClick={onToggleSidebar}
-        >
-          {sidebarExpanded ? 'QLE Document' : 'Q'}
-        </button>
-        <button
-          type="button"
-          className={`rail-nav ${activeFlow === 'pm' ? 'active' : ''}`}
-          onClick={() => onSelectFlow('pm')}
-          title="PM Dashboard"
-        >
-          <ClipboardIcon />
-          {sidebarExpanded ? <span>PM Dashboard</span> : null}
-        </button>
-        <button
-          type="button"
-          className={`rail-nav ${activeFlow === 'developer' ? 'active' : ''}`}
-          onClick={() => onSelectFlow('developer')}
-          title="Developer Dashboard"
-        >
-          <CodeIcon />
-          {sidebarExpanded ? <span>Developer Dashboard</span> : null}
-        </button>
-        {hasWorkbook ? (
+        <div className="rail-top">
           <button
             type="button"
-            className="rail-nav rail-download"
-            disabled={busy || !hasUnsavedChanges}
-            onClick={onDownload}
-            title="Download the latest formatted workbook"
+            className="rail-badge rail-toggle"
+            title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+            onClick={onToggleSidebar}
           >
-            <DownloadIcon />
-            {sidebarExpanded ? <span>Download</span> : null}
+            {sidebarExpanded ? 'QLE Dashboard' : 'Q'}
           </button>
+          <button
+            type="button"
+            className={`rail-nav ${activeFlow === 'pm' ? 'active' : ''}`}
+            onClick={() => onSelectFlow('pm')}
+            title="PM Dashboard"
+          >
+            <ClipboardIcon />
+            {sidebarExpanded ? <span>PM Dashboard</span> : null}
+          </button>
+          <button
+            type="button"
+            className={`rail-nav ${activeFlow === 'developer' ? 'active' : ''}`}
+            onClick={() => onSelectFlow('developer')}
+            title="Developer Dashboard"
+          >
+            <CodeIcon />
+            {sidebarExpanded ? <span>Developer Dashboard</span> : null}
+          </button>
+          {hasWorkbook ? (
+            <button
+              type="button"
+              className="rail-nav rail-download"
+              disabled={busy || !hasUnsavedChanges}
+              onClick={onDownload}
+              title="Download the latest formatted workbook"
+            >
+              <DownloadIcon />
+              {sidebarExpanded ? <span>Download</span> : null}
+            </button>
+          ) : null}
+          <div className="rail-integrations" aria-label="Connected apps">
+            {sidebarExpanded ? <div className="rail-section-label">Connect</div> : null}
+            {(integrationStatus?.providers ?? []).map((provider) => (
+              <button
+                key={provider.provider}
+                type="button"
+                className={`rail-nav rail-integration ${provider.connected ? 'connected' : ''}`}
+                disabled={busy || (!provider.connected && !provider.configured)}
+                title={
+                  provider.connected
+                    ? `Disconnect ${provider.label}`
+                    : provider.configured
+                      ? `Connect ${provider.label}`
+                      : `Configure ${provider.missingConfig.join(', ')} in Railway first`
+                }
+                onClick={() =>
+                  provider.connected
+                    ? onDisconnectIntegration(provider.provider)
+                    : onConnectIntegration(provider.provider)
+                }
+              >
+                <GearIcon />
+                {sidebarExpanded ? (
+                  <span>
+                    {provider.provider === 'atlassian' ? 'Jira + Confluence' : provider.label}
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </div>
+        {connectedName ? (
+          <div className="rail-user" title={`Authenticated as ${connectedName}`}>
+            <div className="rail-user-avatar">{connectedName.trim().slice(0, 1).toUpperCase()}</div>
+            {sidebarExpanded ? (
+              <div className="rail-user-copy">
+                <span>Authenticated</span>
+                <strong>{connectedName}</strong>
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </nav>
     </aside>
@@ -463,10 +517,14 @@ export function WorkflowInsights({
   validationIssues,
   dbCheck,
   onSelectValidationIssue,
+  onCopyText,
 }: WorkflowInsightsProps) {
   if (!diff && validationIssues.length === 0 && !dbCheck) {
     return null;
   }
+  const validationCopyText = validationIssues
+    .map((issue, index) => `${index + 1}. ${issue.message}`)
+    .join('\n');
 
   return (
     <div className="workflow-grid">
@@ -486,8 +544,28 @@ export function WorkflowInsights({
       {validationIssues.length > 0 ? (
         <div className="panel required-fields-panel">
           <div className="required-fields-header">
-            <div className="section-label">Validation</div>
-            <h3>Required Fields</h3>
+            <div className="required-fields-heading-row">
+              <div>
+                <div className="section-label">Validation</div>
+                <h3>Required Fields</h3>
+              </div>
+              {onCopyText ? (
+                <button
+                  type="button"
+                  className="icon-button validation-copy-button"
+                  title="Copy validation errors"
+                  aria-label="Copy validation errors"
+                  onClick={() =>
+                    void onCopyText(
+                      validationCopyText,
+                      `Copied ${validationIssues.length} validation error${validationIssues.length === 1 ? '' : 's'}.`,
+                    )
+                  }
+                >
+                  <CopyIcon />
+                </button>
+              ) : null}
+            </div>
             <p>Complete these before bundling or creating Jira. Download remains available.</p>
           </div>
           <ul className="plain-list required-fields-list">
@@ -652,7 +730,7 @@ export function DeveloperDashboard({
           <div className="flow-hero">
             <div className="sidebar-brow">Developer Dashboard</div>
             <h2>Implementation Intake</h2>
-            <p>Start from the Jira and workbook, then hand the request into the QLE skill workflow for code changes and review.</p>
+            <p>Start from the Jira and workbook, then create the implementation branch from master and hand the request into the QLE skill workflow.</p>
           </div>
           <button
             className="icon-only-button developer-collapse-button"
@@ -704,7 +782,7 @@ export function DeveloperDashboard({
               <div className="pm-action-copy">
                 <div className="section-label">Next Step</div>
                 <h3>Run Implementation Flow</h3>
-                <p>Use Jira plus the reviewed workbook to start the implementation workflow, then verify both the generated diff and the isolated preview before commit and push.</p>
+                <p>Use Jira plus the reviewed workbook to start the implementation workflow. After both are provided, the workflow creates the implementation branch from master, then runs the skill.</p>
               </div>
               <div className="pm-action-group">
                 <button
@@ -726,8 +804,9 @@ export function DeveloperDashboard({
                   <h3>Planned actions</h3>
                 </div>
                 <ul className="plain-list">
+                  <li>Confirm the user-provided Jira key and workbook document.</li>
+                  <li>Create a working branch from master for the implementation.</li>
                   <li>Read the Jira request and attachment.</li>
-                  <li>Create a working branch for the implementation.</li>
                   <li>Run the formatted QLE skill with the workbook context.</li>
                   <li>Start a preview server from the isolated worktree for visual verification.</li>
                   <li>Open changes for user verification before commit and push.</li>
@@ -746,6 +825,10 @@ export function DeveloperDashboard({
                   <div>
                     <strong>Branch preview</strong>
                     <span>{developerJiraKey ? `cursor/${developerJiraKey.toLowerCase()}-qle-update` : 'cursor/jira-key-qle-update'}</span>
+                  </div>
+                  <div>
+                    <strong>Base branch</strong>
+                    <span>{developerStageResult?.baseBranch || 'master'}</span>
                   </div>
                   <div>
                     <strong>Workbook source</strong>

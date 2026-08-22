@@ -11,9 +11,11 @@ import type {
   DeveloperStageResult,
   DiffEntry,
   DiffSummary,
+  IntegrationStatusResponse,
   JiraCreateResult,
   JiraDraftForm,
   JiraDraft,
+  OAuthProvider,
   QleCategory,
   QleDocument,
   QleEnumRow,
@@ -94,6 +96,12 @@ function downloadBlob(blob: Blob, fileName: string) {
   anchor.download = fileName;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+const PILOT_ALLOW_DOWNLOAD_WITH_VALIDATION_WARNINGS = true;
+
+function shouldBlockDownloadForValidation(issues: ValidationIssue[]): boolean {
+  return !PILOT_ALLOW_DOWNLOAD_WITH_VALIDATION_WARNINGS && issues.length > 0;
 }
 
 function base64ToBlob(base64: string, type: string) {
@@ -2188,6 +2196,7 @@ export function App() {
   const [developerReviewChangesCollapsed, setDeveloperReviewChangesCollapsed] = useState(false);
   const [developerUiCodeReviewCollapsed, setDeveloperUiCodeReviewCollapsed] = useState(true);
   const [developerPrSummaryCollapsed, setDeveloperPrSummaryCollapsed] = useState(true);
+  const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatusResponse | null>(null);
   const [status, setStatus] = useState<string>('Upload a workbook to get started.');
   const [busy, setBusy] = useState(false);
   const [lastAutosavedAt, setLastAutosavedAt] = useState<string | null>(null);
@@ -2365,6 +2374,30 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  async function refreshIntegrationStatus() {
+    const payload = await fetchJson<IntegrationStatusResponse>('/api/integrations/status');
+    setIntegrationStatus(payload);
+    return payload;
+  }
+
+  useEffect(() => {
+    void refreshIntegrationStatus().catch(() => {
+      // Integration setup is optional until OAuth env vars are configured.
+    });
+  }, []);
+
+  function handleConnectIntegration(provider: OAuthProvider) {
+    window.location.href = `/api/oauth/${provider}/connect`;
+  }
+
+  async function handleDisconnectIntegration(provider: OAuthProvider) {
+    const payload = await fetchJson<IntegrationStatusResponse>(`/api/oauth/${provider}`, {
+      method: 'DELETE',
+    });
+    setIntegrationStatus(payload);
+    setStatus('Integration disconnected.');
+  }
 
   useEffect(() => {
     if (activeFlow !== 'pm') {
@@ -2965,6 +2998,10 @@ export function App() {
     if (!snapshot) return;
     const issues = validateWorkbookModel(snapshot);
     setValidationIssues(issues);
+    if (shouldBlockDownloadForValidation(issues)) {
+      setStatus('Download blocked. Complete all required fields first.');
+      return;
+    }
     setBusy(true);
     setStatus(
       issues.length > 0
@@ -3374,6 +3411,10 @@ export function App() {
     if (!snapshot) return;
     const issues = validateWorkbookModel(snapshot);
     setValidationIssues(issues);
+    if (shouldBlockDownloadForValidation(issues)) {
+      setStatus('Review download blocked. Complete all required fields first.');
+      return;
+    }
     setBusy(true);
     setStatus(
       issues.length > 0
@@ -3528,9 +3569,12 @@ export function App() {
         hasWorkbook={Boolean(edited)}
         busy={busy}
         hasUnsavedChanges={hasUnsavedChanges}
+        integrationStatus={integrationStatus}
         onToggleSidebar={() => setSidebarExpanded((current) => !current)}
         onSelectFlow={(flow) => setActiveFlow(flow)}
         onDownload={() => void handleSaveWorkbook()}
+        onConnectIntegration={handleConnectIntegration}
+        onDisconnectIntegration={(provider) => void handleDisconnectIntegration(provider)}
       />
 
       <main className="main-pane">
@@ -3601,6 +3645,7 @@ export function App() {
               validationIssues={validationIssues}
               dbCheck={dbCheck}
               onSelectValidationIssue={handleSelectValidationIssue}
+              onCopyText={copyText}
             />
 
             <SaveBanner
