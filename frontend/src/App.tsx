@@ -165,13 +165,18 @@ function unmarkCategoryRemoved(category: QleCategory) {
 }
 
 function createEmptyCategory(): QleCategory {
+  const validationItems = [
+    createValidationItem('documentsQty', '1'),
+    createValidationItem('mandatoryDocuments', '[]'),
+  ];
+
   return {
     id: crypto.randomUUID(),
     enum: '',
     en: '',
     es: '',
-    validation: '',
-    validationItems: [],
+    validation: serializeValidationItems(validationItems),
+    validationItems,
     documents: [],
   };
 }

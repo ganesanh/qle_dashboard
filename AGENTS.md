@@ -22,6 +22,7 @@ The category editor displays validation rules as a fixed rule name and an editab
 
 - `documentsQty` is a fixed rule name; its value, such as `1`, must remain editable.
 - `mandatoryDocuments` is a fixed rule name; its value, such as `[]`, must remain editable.
+- A newly added category must start with both rows, defaulting to `documentsQty: 1` and `mandatoryDocuments: []`.
 - Editing a rule value must update the corresponding `QleValidationItem`, synchronize `category.validation`, appear in review changes, and be written to the exported workbook.
 - Do not treat these category rule values as switches that enable or disable the dashboard's global validation checks.
 - Do not unlock fixed rule names unless the user explicitly requests that separate behavior.
