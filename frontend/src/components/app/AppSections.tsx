@@ -8,7 +8,12 @@ import type {
   OAuthProvider,
   QleWorkbookModel,
 } from '../../../../shared/types';
-import type { ValidationIssue } from '../../../../shared/validation';
+import {
+  type ValidationIssue,
+  type ValidationRuleKey,
+  type ValidationRuleSettings,
+  validationRuleDefinitions,
+} from '../../../../shared/validation';
 import {
   ChevronDownIcon,
   ChevronUpIcon,
@@ -111,9 +116,13 @@ type PmWorkspaceIntroProps = {
 type WorkflowInsightsProps = {
   diff: DiffSummary | null;
   validationIssues: ValidationIssue[];
+  validationRuleSettings: ValidationRuleSettings;
+  showValidationRules: boolean;
   dbCheck: DbEventCheckResult | null;
   onSelectValidationIssue?: (issue: ValidationIssue) => void;
   onCopyText?: (value: string, successMessage: string) => Promise<void>;
+  onValidationRuleToggle: (ruleKey: ValidationRuleKey, enabled: boolean) => void;
+  onResetValidationRules: () => void;
 };
 
 type SaveBannerProps = {
@@ -515,19 +524,59 @@ export function PmWorkspaceIntro({
 export function WorkflowInsights({
   diff,
   validationIssues,
+  validationRuleSettings,
+  showValidationRules,
   dbCheck,
   onSelectValidationIssue,
   onCopyText,
+  onValidationRuleToggle,
+  onResetValidationRules,
 }: WorkflowInsightsProps) {
-  if (!diff && validationIssues.length === 0 && !dbCheck) {
+  if (!diff && validationIssues.length === 0 && !dbCheck && !showValidationRules) {
     return null;
   }
   const validationCopyText = validationIssues
     .map((issue, index) => `${index + 1}. ${issue.message}`)
     .join('\n');
+  const disabledRuleCount = validationRuleDefinitions.filter(
+    (rule) => !validationRuleSettings[rule.key],
+  ).length;
 
   return (
     <div className="workflow-grid">
+      {showValidationRules ? (
+        <div className="panel validation-rules-panel">
+          <div className="validation-rules-header">
+            <div>
+              <div className="section-label">Validation</div>
+              <h3>Rules</h3>
+              <p>
+                {disabledRuleCount > 0
+                  ? `${disabledRuleCount} rule${disabledRuleCount === 1 ? '' : 's'} disabled.`
+                  : 'Default rules are active.'}
+              </p>
+            </div>
+            <button type="button" className="ghost" onClick={onResetValidationRules}>
+              Reset
+            </button>
+          </div>
+          <div className="validation-rule-toggle-list">
+            {validationRuleDefinitions.map((rule) => (
+              <label key={rule.key} className="validation-rule-toggle">
+                <input
+                  type="checkbox"
+                  checked={validationRuleSettings[rule.key]}
+                  onChange={(event) => onValidationRuleToggle(rule.key, event.target.checked)}
+                />
+                <span>
+                  <strong>{rule.label}</strong>
+                  <small>{rule.description}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {diff ? (
         <div className="panel">
           <h3>Diff Summary</h3>
