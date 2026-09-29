@@ -27,12 +27,8 @@ import type {
   ReadyForEngineeringResult,
 } from '../../shared/types';
 import {
-  defaultValidationRuleSettings,
   isUnsupportedUiOnlyWorkbookEvent,
-  normalizeValidationRuleSettings,
   type ValidationIssue,
-  type ValidationRuleKey,
-  type ValidationRuleSettings,
   validateWorkbookModel,
 } from '../../shared/validation';
 import {
@@ -2058,24 +2054,6 @@ function buildUploadFileNameSuggestions(stateCode: string, version: string, dete
 
 const ACTIVE_FLOW_STORAGE_KEY = 'qle-dashboard-active-flow';
 const DB_CONFIG_STORAGE_KEY = 'qle-dashboard-db-config';
-const VALIDATION_RULES_STORAGE_KEY = 'qle-dashboard-validation-rules';
-
-function loadValidationRuleSettings(): ValidationRuleSettings {
-  if (typeof window === 'undefined') {
-    return defaultValidationRuleSettings;
-  }
-  const raw = window.localStorage.getItem(VALIDATION_RULES_STORAGE_KEY);
-  if (!raw) {
-    return defaultValidationRuleSettings;
-  }
-  try {
-    return normalizeValidationRuleSettings(JSON.parse(raw) as Partial<ValidationRuleSettings>);
-  } catch {
-    window.localStorage.removeItem(VALIDATION_RULES_STORAGE_KEY);
-    return defaultValidationRuleSettings;
-  }
-}
-
 function parseEventEnumPath(path: string): { eventNumber: number | null; enumName: string } {
   const match = path.match(/^Event\s+(\d+)\s*>\s*(.+)$/i);
   if (!match) {
@@ -2173,9 +2151,6 @@ export function App() {
   const [jiraDraft, setJiraDraft] = useState<JiraDraft | null>(null);
   const [jiraForm, setJiraForm] = useState<JiraDraftForm | null>(null);
   const [missingJiraForm, setMissingJiraForm] = useState<JiraDraftForm | null>(null);
-  const [validationRuleSettings, setValidationRuleSettings] = useState<ValidationRuleSettings>(() =>
-    loadValidationRuleSettings(),
-  );
   const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([]);
   const [dbCheck, setDbCheck] = useState<DbEventCheckResult | null>(null);
   const [jiraModalOpen, setJiraModalOpen] = useState(false);
@@ -2359,28 +2334,6 @@ export function App() {
   }, [activeFlow]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(VALIDATION_RULES_STORAGE_KEY, JSON.stringify(validationRuleSettings));
-    }
-    if (edited) {
-      setValidationIssues(validateWorkbookModel(edited, validationRuleSettings));
-    }
-  }, [edited, validationRuleSettings]);
-
-  function handleValidationRuleToggle(ruleKey: ValidationRuleKey, enabled: boolean) {
-    setValidationRuleSettings((current) => ({
-      ...current,
-      [ruleKey]: enabled,
-    }));
-    setStatus(`Validation rule ${enabled ? 'enabled' : 'disabled'}.`);
-  }
-
-  function handleResetValidationRules() {
-    setValidationRuleSettings(defaultValidationRuleSettings);
-    setStatus('Validation rules reset to defaults.');
-  }
-
-  useEffect(() => {
     let cancelled = false;
 
     const loadDbConfig = async () => {
@@ -2559,7 +2512,7 @@ export function App() {
   }, [developerRunId]);
 
   function applyValidationState(model: QleWorkbookModel, baseStatus?: string): ValidationIssue[] {
-    const issues = validateWorkbookModel(model, validationRuleSettings);
+    const issues = validateWorkbookModel(model);
     setValidationIssues(issues);
     if (issues.length > 0) {
       setStatus(`${issues.length} required field${issues.length === 1 ? '' : 's'} still need attention.`);
@@ -2576,7 +2529,7 @@ export function App() {
     });
     setLastAutosavedAt(timestamp);
     if (edited) {
-      const issues = validateWorkbookModel(edited, validationRuleSettings);
+      const issues = validateWorkbookModel(edited);
       setValidationIssues(issues);
       if (issues.length > 0) {
         setStatus(`${issues.length} required field${issues.length === 1 ? '' : 's'} still need attention.`);
@@ -2745,7 +2698,7 @@ export function App() {
 
   function ensureValidEdited(actionLabel: string): boolean {
     if (!edited) return false;
-    const issues = validateWorkbookModel(edited, validationRuleSettings);
+    const issues = validateWorkbookModel(edited);
     setValidationIssues(issues);
     if (issues.length > 0) {
       setStatus(`${actionLabel} blocked. Complete all required fields first.`);
@@ -3043,7 +2996,7 @@ export function App() {
   async function handleSaveWorkbook() {
     const snapshot = buildCurrentWorkbookSnapshot();
     if (!snapshot) return;
-    const issues = validateWorkbookModel(snapshot, validationRuleSettings);
+    const issues = validateWorkbookModel(snapshot);
     setValidationIssues(issues);
     if (shouldBlockDownloadForValidation(issues)) {
       setStatus('Download blocked. Complete all required fields first.');
@@ -3456,7 +3409,7 @@ export function App() {
     if (!original || !edited) return;
     const snapshot = buildCurrentWorkbookSnapshot();
     if (!snapshot) return;
-    const issues = validateWorkbookModel(snapshot, validationRuleSettings);
+    const issues = validateWorkbookModel(snapshot);
     setValidationIssues(issues);
     if (shouldBlockDownloadForValidation(issues)) {
       setStatus('Review download blocked. Complete all required fields first.');
@@ -3690,13 +3643,9 @@ export function App() {
             <WorkflowInsights
               diff={diff}
               validationIssues={validationIssues}
-              validationRuleSettings={validationRuleSettings}
-              showValidationRules={Boolean(edited)}
               dbCheck={dbCheck}
               onSelectValidationIssue={handleSelectValidationIssue}
               onCopyText={copyText}
-              onValidationRuleToggle={handleValidationRuleToggle}
-              onResetValidationRules={handleResetValidationRules}
             />
 
             <SaveBanner

@@ -840,62 +840,6 @@ button:disabled {
   border-color: rgba(194, 143, 63, 0.16);
 }
 
-.validation-rules-panel {
-  background: rgba(255, 255, 255, 0.76);
-}
-
-.validation-rules-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.validation-rules-header h3,
-.validation-rules-header p {
-  margin: 0;
-}
-
-.validation-rules-header p {
-  color: #6d6558;
-}
-
-.validation-rule-toggle-list {
-  display: grid;
-  gap: 10px;
-}
-
-.validation-rule-toggle {
-  display: grid;
-  grid-template-columns: 18px 1fr;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 10px;
-  border: 1px solid rgba(146, 124, 89, 0.14);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.validation-rule-toggle input {
-  margin-top: 3px;
-}
-
-.validation-rule-toggle span {
-  display: grid;
-  gap: 3px;
-}
-
-.validation-rule-toggle strong {
-  color: #3f372c;
-  font-size: 0.92rem;
-}
-
-.validation-rule-toggle small {
-  color: #756b5d;
-  line-height: 1.35;
-}
-
 .required-fields-header {
   display: grid;
   gap: 6px;

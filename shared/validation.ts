@@ -5,78 +5,6 @@ export type ValidationIssue = {
   message: string;
 };
 
-export type ValidationRuleKey =
-  | 'eventInstructions'
-  | 'eventEnumRows'
-  | 'enumLabels'
-  | 'categoryLabels'
-  | 'categoryValidationRules'
-  | 'categoryDocuments'
-  | 'documentLabels'
-  | 'consistentDocumentLabels';
-
-export type ValidationRuleSettings = Record<ValidationRuleKey, boolean>;
-
-export type ValidationRuleDefinition = {
-  key: ValidationRuleKey;
-  label: string;
-  description: string;
-};
-
-export const validationRuleDefinitions: ValidationRuleDefinition[] = [
-  {
-    key: 'eventInstructions',
-    label: 'Event instructions',
-    description: 'Require English and Spanish instructions for each event.',
-  },
-  {
-    key: 'eventEnumRows',
-    label: 'Event enum rows',
-    description: 'Require each event to include at least one enum row.',
-  },
-  {
-    key: 'enumLabels',
-    label: 'Enum labels',
-    description: 'Require event enum values plus English and Spanish labels.',
-  },
-  {
-    key: 'categoryLabels',
-    label: 'Category labels',
-    description: 'Require category enum, English label, and Spanish label.',
-  },
-  {
-    key: 'categoryValidationRules',
-    label: 'Category validation rules',
-    description: 'Require each category to have document requirement rules.',
-  },
-  {
-    key: 'categoryDocuments',
-    label: 'Category documents',
-    description: 'Require each category to include at least one document.',
-  },
-  {
-    key: 'documentLabels',
-    label: 'Document labels',
-    description: 'Require document enum, English label, and Spanish label.',
-  },
-  {
-    key: 'consistentDocumentLabels',
-    label: 'Consistent reused document labels',
-    description: 'Flag reused document enums when English or Spanish labels differ across events.',
-  },
-];
-
-export const defaultValidationRuleSettings: ValidationRuleSettings = {
-  eventInstructions: true,
-  eventEnumRows: true,
-  enumLabels: true,
-  categoryLabels: true,
-  categoryValidationRules: true,
-  categoryDocuments: true,
-  documentLabels: true,
-  consistentDocumentLabels: true,
-};
-
 type DocumentLabelReference = {
   en: string;
   es: string;
@@ -117,22 +45,9 @@ export function isUnsupportedUiOnlyWorkbookEvent(event: QleWorkbookModel['events
   return event.enumRows.some((row) => isUnsupportedUiOnlyEvent(row.enum, row.en));
 }
 
-export function normalizeValidationRuleSettings(
-  settings: Partial<ValidationRuleSettings> | null | undefined,
-): ValidationRuleSettings {
-  return {
-    ...defaultValidationRuleSettings,
-    ...(settings ?? {}),
-  };
-}
-
-export function validateWorkbookModel(
-  model: QleWorkbookModel,
-  settings?: Partial<ValidationRuleSettings> | null,
-): ValidationIssue[] {
+export function validateWorkbookModel(model: QleWorkbookModel): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const documentLabelRegistry = new Map<string, DocumentLabelReference>();
-  const rules = normalizeValidationRuleSettings(settings);
 
   model.events.forEach((event: QleEvent, eventIndex: number) => {
     if (event.isRemoved) {
@@ -143,32 +58,27 @@ export function validateWorkbookModel(
       return;
     }
 
-    if (rules.eventEnumRows && event.enumRows.length === 0) {
+    if (event.enumRows.length === 0) {
       issues.push({
         path: `events.${eventIndex}.enumRows`,
         message: `Event ${event.eventNumber} needs at least one enum row.`,
       });
     }
 
-    if (rules.eventInstructions) {
-      pushRequired(
-        issues,
-        `events.${eventIndex}.instructionsEn`,
-        event.instructionsEn,
-        `Event ${event.eventNumber} English instructions`,
-      );
-      pushRequired(
-        issues,
-        `events.${eventIndex}.instructionsEs`,
-        event.instructionsEs,
-        `Event ${event.eventNumber} Spanish instructions`,
-      );
-    }
+    pushRequired(
+      issues,
+      `events.${eventIndex}.instructionsEn`,
+      event.instructionsEn,
+      `Event ${event.eventNumber} English instructions`,
+    );
+    pushRequired(
+      issues,
+      `events.${eventIndex}.instructionsEs`,
+      event.instructionsEs,
+      `Event ${event.eventNumber} Spanish instructions`,
+    );
 
     event.enumRows.forEach((row: QleEnumRow, rowIndex: number) => {
-      if (!rules.enumLabels) {
-        return;
-      }
       pushRequired(issues, `events.${eventIndex}.enumRows.${rowIndex}.enum`, row.enum, `Event ${event.eventNumber} enum`);
       pushRequired(issues, `events.${eventIndex}.enumRows.${rowIndex}.en`, row.en, `Event ${event.eventNumber} English label`);
       pushRequired(issues, `events.${eventIndex}.enumRows.${rowIndex}.es`, row.es, `Event ${event.eventNumber} Spanish label`);
@@ -179,36 +89,32 @@ export function validateWorkbookModel(
         return;
       }
 
-      if (rules.categoryLabels) {
-        pushRequired(
-          issues,
-          `events.${eventIndex}.categories.${categoryIndex}.enum`,
-          category.enum,
-          `Event ${event.eventNumber} category enum`,
-        );
-        pushRequired(
-          issues,
-          `events.${eventIndex}.categories.${categoryIndex}.en`,
-          category.en,
-          `Event ${event.eventNumber} category English label`,
-        );
-        pushRequired(
-          issues,
-          `events.${eventIndex}.categories.${categoryIndex}.es`,
-          category.es,
-          `Event ${event.eventNumber} category Spanish label`,
-        );
-      }
-      if (rules.categoryValidationRules) {
-        pushRequired(
-          issues,
-          `events.${eventIndex}.categories.${categoryIndex}.validation`,
-          category.validation,
-          `Event ${event.eventNumber} category validation rule`,
-        );
-      }
+      pushRequired(
+        issues,
+        `events.${eventIndex}.categories.${categoryIndex}.enum`,
+        category.enum,
+        `Event ${event.eventNumber} category enum`,
+      );
+      pushRequired(
+        issues,
+        `events.${eventIndex}.categories.${categoryIndex}.en`,
+        category.en,
+        `Event ${event.eventNumber} category English label`,
+      );
+      pushRequired(
+        issues,
+        `events.${eventIndex}.categories.${categoryIndex}.es`,
+        category.es,
+        `Event ${event.eventNumber} category Spanish label`,
+      );
+      pushRequired(
+        issues,
+        `events.${eventIndex}.categories.${categoryIndex}.validation`,
+        category.validation,
+        `Event ${event.eventNumber} category validation rule`,
+      );
 
-      if (rules.categoryDocuments && category.documents.length === 0) {
+      if (category.documents.length === 0) {
         issues.push({
           path: `events.${eventIndex}.categories.${categoryIndex}.documents`,
           message: `Category ${category.enum || categoryIndex + 1} in Event ${event.eventNumber} needs at least one document.`,
@@ -221,29 +127,27 @@ export function validateWorkbookModel(
         }
 
         const documentPath = `events.${eventIndex}.categories.${categoryIndex}.documents.${documentIndex}`;
-        if (rules.documentLabels) {
-          pushRequired(
-            issues,
-            `${documentPath}.enum`,
-            document.enum,
-            `Document enum in Event ${event.eventNumber}`,
-          );
-          pushRequired(
-            issues,
-            `${documentPath}.en`,
-            document.en,
-            `Document English label in Event ${event.eventNumber}`,
-          );
-          pushRequired(
-            issues,
-            `${documentPath}.es`,
-            document.es,
-            `Document Spanish label in Event ${event.eventNumber}`,
-          );
-        }
+        pushRequired(
+          issues,
+          `${documentPath}.enum`,
+          document.enum,
+          `Document enum in Event ${event.eventNumber}`,
+        );
+        pushRequired(
+          issues,
+          `${documentPath}.en`,
+          document.en,
+          `Document English label in Event ${event.eventNumber}`,
+        );
+        pushRequired(
+          issues,
+          `${documentPath}.es`,
+          document.es,
+          `Document Spanish label in Event ${event.eventNumber}`,
+        );
 
         const documentEnumKey = document.enum.trim().toUpperCase();
-        if (!rules.consistentDocumentLabels || !documentEnumKey) {
+        if (!documentEnumKey) {
           return;
         }
 
